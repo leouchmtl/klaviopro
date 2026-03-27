@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import ProspectsTable from "@/components/prospects/ProspectsTable";
 
 export default function ProspectsPage() {
@@ -9,7 +10,9 @@ export default function ProspectsPage() {
           Gérez vos contacts et suivez l'avancement des relances
         </p>
       </div>
-      <ProspectsTable />
+      <Suspense>
+        <ProspectsTable />
+      </Suspense>
     </div>
   );
 }

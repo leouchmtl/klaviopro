@@ -20,7 +20,8 @@ export async function POST(request: NextRequest) {
     const result = await sendMessage(session.accessToken, to, subject, body ?? "");
     return NextResponse.json({ id: result.id });
   } catch (err) {
-    console.error("Gmail send error:", err);
-    return NextResponse.json({ error: "send_failed" }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Gmail send error:", message);
+    return NextResponse.json({ error: "send_failed", detail: message }, { status: 500 });
   }
 }

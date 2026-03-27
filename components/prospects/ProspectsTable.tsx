@@ -2,13 +2,11 @@
 
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord } from "@/lib/types";
 import { STATUTS, SECTEURS } from "@/lib/types";
 import {
-  getProspects,
-  addProspect,
   updateProspect,
-  deleteProspect,
   saveProspects,
   emptySteps,
   getEmails,
@@ -22,7 +20,11 @@ import {
   withRelance,
   today,
   relanceDateColor,
+  STEP_ORDER,
+  STEP_TO_STATUT,
+  applyStepChange,
 } from "@/lib/utils";
+import { useProspects } from "@/lib/hooks";
 import type { GmailMsg } from "@/lib/gmail";
 
 // ── Editable cell ─────────────────────────────────────────────────────────────
@@ -124,53 +126,6 @@ const STEP_KEYS: { key: keyof ProspectSteps; label: string }[] = [
   { key: "j35", label: "J+35" },
   { key: "j60", label: "J+60" },
 ];
-
-const STEP_TO_STATUT: Record<keyof ProspectSteps, Statut> = {
-  j0:  "À contacter",
-  j5:  "Relance J+5",
-  j12: "Relance J+12",
-  j21: "Relance J+21",
-  j35: "Relance J+35",
-  j60: "Relance J+60",
-};
-
-const STEP_ORDER = STEP_KEYS.map(({ key }) => key);
-
-function applyStepChange(
-  steps: ProspectSteps,
-  key: keyof ProspectSteps,
-  entry: StepEntry,
-): { steps: ProspectSteps; statut: Statut; dernierContact: string | null } {
-  const idx = STEP_ORDER.indexOf(key);
-  const newSteps = { ...steps };
-
-  if (entry.done) {
-    newSteps[key] = entry;
-    const fillDate = entry.date ?? today();
-    for (let i = 0; i < idx; i++) {
-      if (!newSteps[STEP_ORDER[i]].done) {
-        newSteps[STEP_ORDER[i]] = { done: true, date: fillDate };
-      }
-    }
-  } else {
-    newSteps[key] = { done: false, date: null };
-    for (let i = idx + 1; i < STEP_ORDER.length; i++) {
-      newSteps[STEP_ORDER[i]] = { done: false, date: null };
-    }
-  }
-
-  let statut: Statut = "À contacter";
-  let dernierContact: string | null = null;
-  for (let i = STEP_ORDER.length - 1; i >= 0; i--) {
-    if (newSteps[STEP_ORDER[i]].done) {
-      statut = STEP_TO_STATUT[STEP_ORDER[i]];
-      dernierContact = newSteps[STEP_ORDER[i]].date ?? today();
-      break;
-    }
-  }
-
-  return { steps: newSteps, statut, dernierContact };
-}
 
 function StepsProgressCell({
   steps,
@@ -897,16 +852,19 @@ function EmailsTab({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ProspectsTable() {
-  const [prospects, setProspects]         = useState<Prospect[]>([]);
+  const { prospects, setProspects, reload, addOne, deleteOne } = useProspects();
   const [filters, setFilters]             = useState<Filters>(EMPTY_FILTERS);
   const [selectedIds, setSelectedIds]     = useState<Set<string>>(new Set());
   const [newRowId, setNewRowId]           = useState<string | null>(null);
   const [drawerProspectId, setDrawerProspectId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const searchParams = useSearchParams();
 
-  useEffect(() => { setProspects(getProspects()); }, []);
-
-  function reload() { setProspects(getProspects()); }
+  // Auto-open drawer when navigated via command palette (?drawer=<id>)
+  useEffect(() => {
+    const id = searchParams.get("drawer");
+    if (id) setDrawerProspectId(id);
+  }, [searchParams]);
 
   function setFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((f) => ({ ...f, [key]: value }));
@@ -936,16 +894,16 @@ export default function ProspectsTable() {
   // ── Bulk ───────────────────────────────────────────────────────────────────
 
   function handleBulkStatut(statut: Statut) {
-    saveProspects(getProspects().map((p) => selectedIds.has(p.id) ? withRelance({ ...p, statut }) : p));
+    saveProspects(prospects.map((p) => selectedIds.has(p.id) ? withRelance({ ...p, statut }) : p));
     reload(); setSelectedIds(new Set());
   }
   function handleBulkSecteur(secteur: Secteur) {
-    saveProspects(getProspects().map((p) => selectedIds.has(p.id) ? { ...p, secteur } : p));
+    saveProspects(prospects.map((p) => selectedIds.has(p.id) ? { ...p, secteur } : p));
     reload(); setSelectedIds(new Set());
   }
   function handleBulkDone() {
     const t = today();
-    saveProspects(getProspects().map((p) => {
+    saveProspects(prospects.map((p) => {
       if (!selectedIds.has(p.id)) return p;
       const steps = { ...p.steps };
       for (const k of ["j0", "j5", "j12", "j21", "j35", "j60"] as const) {
@@ -956,26 +914,24 @@ export default function ProspectsTable() {
     reload(); setSelectedIds(new Set());
   }
   function handleBulkDelete() {
-    saveProspects(getProspects().filter((p) => !selectedIds.has(p.id)));
+    saveProspects(prospects.filter((p) => !selectedIds.has(p.id)));
     reload(); setSelectedIds(new Set());
   }
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
 
   function handleAdd() {
-    const np = addProspect({
+    const np = addOne({
       marque: "", secteur: "Autre", contact: "", email: "", gapCrm: "",
       statut: "À contacter", notes: "", steps: emptySteps(),
       ouverturesMultiples: false, enConversation: false,
       dernierContact: null, relanceFaite: false,
     });
-    setProspects((prev) => [np, ...prev]);
     setNewRowId(np.id);
   }
 
   function handleDelete(id: string) {
-    deleteProspect(id);
-    setProspects((prev) => prev.filter((p) => p.id !== id));
+    deleteOne(id);
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
   }
 
@@ -991,7 +947,7 @@ export default function ProspectsTable() {
         if (!marque.trim()) return;
         const rawStatut  = (row["Statut"]  || "À contacter").trim() as Statut;
         const rawSecteur = (row["Secteur"] || "Autre").trim() as Secteur;
-        addProspect({
+        addOne({
           marque,
           secteur:    SECTEURS.includes(rawSecteur) ? rawSecteur : "Autre",
           contact:    row["Contact"] || "",

@@ -1,4 +1,4 @@
-import type { Statut, Prospect, ProspectSteps } from "./types";
+import type { Statut, Prospect, ProspectSteps, StepEntry } from "./types";
 
 // Days to add from dernierContact (or today) per statut (null = no follow-up)
 const STATUT_DELAY: Record<Statut, number | null> = {
@@ -69,8 +69,53 @@ export function endOfWeek(): string {
 
 // ── Dynamic "Prochaine relance" from step checkboxes ─────────────────────────
 
-const STEP_ORDER = ["j0", "j5", "j12", "j21", "j35", "j60"] as const;
+export const STEP_ORDER = ["j0", "j5", "j12", "j21", "j35", "j60"] as const;
 type StepKey = (typeof STEP_ORDER)[number];
+
+export const STEP_TO_STATUT: Record<StepKey, Statut> = {
+  j0:  "À contacter",
+  j5:  "Relance J+5",
+  j12: "Relance J+12",
+  j21: "Relance J+21",
+  j35: "Relance J+35",
+  j60: "Relance J+60",
+};
+
+export function applyStepChange(
+  steps: ProspectSteps,
+  key: StepKey,
+  entry: StepEntry,
+): { steps: ProspectSteps; statut: Statut; dernierContact: string | null } {
+  const idx = STEP_ORDER.indexOf(key);
+  const newSteps = { ...steps };
+
+  if (entry.done) {
+    newSteps[key] = entry;
+    const fillDate = entry.date ?? today();
+    for (let i = 0; i < idx; i++) {
+      if (!newSteps[STEP_ORDER[i]].done) {
+        newSteps[STEP_ORDER[i]] = { done: true, date: fillDate };
+      }
+    }
+  } else {
+    newSteps[key] = { done: false, date: null };
+    for (let i = idx + 1; i < STEP_ORDER.length; i++) {
+      newSteps[STEP_ORDER[i]] = { done: false, date: null };
+    }
+  }
+
+  let statut: Statut = "À contacter";
+  let dernierContact: string | null = null;
+  for (let i = STEP_ORDER.length - 1; i >= 0; i--) {
+    if (newSteps[STEP_ORDER[i]].done) {
+      statut = STEP_TO_STATUT[STEP_ORDER[i]];
+      dernierContact = newSteps[STEP_ORDER[i]].date ?? today();
+      break;
+    }
+  }
+
+  return { steps: newSteps as ProspectSteps, statut, dernierContact };
+}
 
 // Days to add from each step's date to get the NEXT expected relance
 const STEP_GAPS: Record<StepKey, number | null> = {

@@ -147,11 +147,16 @@ export async function sendMessage(
   subject: string,
   body: string
 ): Promise<{ id: string }> {
+  // Fetch sender address so the From header is valid
+  const profile = await getProfile(accessToken);
+  const from = profile.emailAddress;
+
   const raw = [
+    `From: ${from}`,
     `To: ${to}`,
     `Subject: ${subject}`,
-    "Content-Type: text/plain; charset=utf-8",
     "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
     "",
     body,
   ].join("\r\n");

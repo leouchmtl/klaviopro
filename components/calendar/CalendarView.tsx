@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Prospect } from "@/lib/types";
-import { getProspects, updateProspect } from "@/lib/storage";
+import { useProspects } from "@/lib/hooks";
 import {
   today,
   startOfWeek,
@@ -12,6 +12,9 @@ import {
   isToday,
   STATUT_COLORS,
   toDateStr,
+  STEP_ORDER,
+  applyStepChange,
+  withRelance,
 } from "@/lib/utils";
 
 type View = "list" | "calendar";
@@ -25,34 +28,40 @@ function itemColor(done: boolean, prochaineRelance: string | null) {
 }
 
 export default function CalendarView() {
-  const [prospects, setProspects] = useState<Prospect[]>([]);
+  const { prospects, updateOne } = useProspects();
   const [view, setView] = useState<View>("list");
   const [currentMonth, setCurrentMonth] = useState(() => {
     const d = new Date();
     return { year: d.getFullYear(), month: d.getMonth() };
   });
 
-  function load() {
-    setProspects(getProspects());
-  }
-
-  useEffect(() => { load(); }, []);
-
   function toggleDone(p: Prospect) {
-    const updated = { ...p, relanceFaite: !p.relanceFaite };
-    updateProspect(updated);
-    setProspects((prev) => prev.map((x) => (x.id === p.id ? { ...x, relanceFaite: !x.relanceFaite } : x)));
+    if (p.relanceFaite) {
+      // Uncheck: clear relanceFaite only (step stays done)
+      updateOne({ ...p, relanceFaite: false });
+      return;
+    }
+    // Check: advance to next unchecked step + mark relanceFaite
+    const nextKey = STEP_ORDER.find((k) => !p.steps[k].done);
+    if (nextKey) {
+      const { steps, statut, dernierContact } = applyStepChange(
+        p.steps, nextKey, { done: true, date: today() }
+      );
+      updateOne(withRelance({ ...p, steps, statut, dernierContact, relanceFaite: true }));
+    } else {
+      updateOne({ ...p, relanceFaite: true });
+    }
   }
 
-  const withRelance = prospects.filter((p) => !!p.prochaineRelance);
+  const withPR = prospects.filter((p) => !!p.prochaineRelance);
   const todayStr = today();
   const weekStart = startOfWeek();
   const weekEnd = endOfWeek();
 
-  const dueToday = withRelance.filter(
+  const dueToday = withPR.filter(
     (p) => p.prochaineRelance === todayStr || isLate(p.prochaineRelance)
   );
-  const dueThisWeek = withRelance.filter((p) => {
+  const dueThisWeek = withPR.filter((p) => {
     const d = p.prochaineRelance!;
     return d > todayStr && d >= weekStart && d <= weekEnd;
   });
@@ -79,7 +88,7 @@ export default function CalendarView() {
         <ListView dueToday={dueToday} dueThisWeek={dueThisWeek} onToggle={toggleDone} />
       ) : (
         <MonthCalendar
-          prospects={withRelance}
+          prospects={withPR}
           currentMonth={currentMonth}
           setCurrentMonth={setCurrentMonth}
           onToggle={toggleDone}
