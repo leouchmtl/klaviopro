@@ -207,9 +207,18 @@ export const STATUT_COLORS: Record<Statut, { bg: string; text: string }> = {
   "Sans besoin":  { bg: "bg-gray-100",   text: "text-gray-600"   },
 };
 
+const TERMINAL_STATUTS: readonly Statut[] = ["Client", "Refus", "Sans besoin"];
+
 export function withRelance(p: Prospect): Prospect {
-  return {
-    ...p,
-    prochaineRelance: calcProchaineRelance(p.statut, p.dernierContact),
-  };
+  // Terminal statuts → no follow-up scheduled
+  if (TERMINAL_STATUTS.includes(p.statut)) {
+    return { ...p, prochaineRelance: null };
+  }
+  // No steps checked → prospect hasn't entered the relance sequence yet
+  const noStepsDone = STEP_ORDER.every((k) => !p.steps[k].done);
+  if (noStepsDone) {
+    return { ...p, prochaineRelance: null };
+  }
+  // Use actual step dates for date-coherent calculation
+  return { ...p, prochaineRelance: calcNextRelanceFromSteps(p.steps) };
 }

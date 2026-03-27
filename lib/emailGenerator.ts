@@ -1,9 +1,11 @@
 export interface EmailVariant {
   angle: string;
-  angleKey: string;
+  angleKey: string; // matches step key: "j0" | "j5" | "j12" | "j21" | "j35" | "j60"
   subject: string;
   body: string;
 }
+
+export type RelanceStep = "J0" | "J+5" | "J+12" | "J+21" | "J+35" | "J+60";
 
 export const GAP_LABELS: Record<string, string> = {
   welcome_flow:    "l'absence de séquence de bienvenue",
@@ -18,20 +20,33 @@ export function resolveGap(gap: string): string {
   return GAP_LABELS[gap] ?? gap;
 }
 
-// ── 6 angle templates ─────────────────────────────────────────────────────────
+// Maps RelanceStep → variant array index
+const STEP_INDICES: Record<RelanceStep, number> = {
+  "J0":  0,
+  "J+5": 1,
+  "J+12": 2,
+  "J+21": 3,
+  "J+35": 4,
+  "J+60": 5,
+};
 
-function angle1(b: string, c: string, g: string): EmailVariant {
+export function suggestVariantIndex(step: RelanceStep): number {
+  return STEP_INDICES[step];
+}
+
+// ── Step-aware templates ───────────────────────────────────────────────────────
+
+// J0 — Première prise de contact (Découverte)
+function templateJ0(b: string, c: string, g: string): EmailVariant {
   return {
-    angle: "Résultat chiffré",
-    angleKey: "result",
-    subject: `${b} — comment générer +200K€ avec votre liste email`,
+    angle: "Premier contact (J0)",
+    angleKey: "j0",
+    subject: `J'ai remarqué quelque chose sur ${b}.com`,
     body: `Bonjour ${c},
 
-Je travaille avec des marques e-commerce mode et beauté sur leur stratégie email Klaviyo.
+En parcourant votre site, j'ai identifié ${g} chez ${b}. C'est souvent ce type de gap qui représente le potentiel de revenus email le plus immédiat, sans aucun budget publicitaire supplémentaire.
 
-Résultat concret : l'une de mes clientes a généré +200 000 € en 90 jours, avec un taux d'ouverture moyen de 44,82 %.
-
-En analysant ${b}, j'ai remarqué ${g}. C'est souvent là que se cachent les revenus les plus faciles à activer — sans aucun budget publicitaire supplémentaire.
+Je suis consultant Klaviyo spécialisé dans la mode et le lifestyle. Mon approche est simple : identifier les automatisations manquantes, les mettre en place rapidement, et mesurer les résultats.
 
 Seriez-vous disponible 20 minutes cette semaine pour en discuter ?
 
@@ -40,89 +55,95 @@ Bien à vous,
   };
 }
 
-function angle2(b: string, c: string, g: string): EmailVariant {
+// J+5 — Rebond léger sur le premier message
+function templateJ5(b: string, c: string, g: string): EmailVariant {
   return {
-    angle: "Gap identifié",
-    angleKey: "gap",
-    subject: `Ce que j'ai remarqué sur ${b}.com`,
+    angle: "Relance légère (J+5)",
+    angleKey: "j5",
+    subject: `Suite à mon message — ${b}`,
     body: `Bonjour ${c},
 
-En analysant votre site, j'ai identifié ${g} — ce qui représente probablement des milliers d'euros de revenus non captés chaque mois.
+Je me permets de revenir vers vous suite à mon message de la semaine dernière, au sujet de ${g} chez ${b}.
 
-Je suis consultant Klaviyo spécialisé dans la mode et le lifestyle. J'aide des marques comme ${b} à combler exactement ce type de gap en quelques semaines, sans perturber vos opérations actuelles.
+Je sais que les priorités s'accumulent et que ma proposition a peut-être été noyée dans votre boîte. C'est pourquoi je reviens simplement pour savoir si vous avez eu l'occasion d'y réfléchir.
 
-Une question : avez-vous déjà travaillé sur ce point en interne ?
+Avez-vous réfléchi à votre stratégie email Klaviyo récemment ?
 
 Cordialement,
 [Votre prénom]`,
   };
 }
 
-function angle3(b: string, c: string, g: string): EmailVariant {
+// J+12 — Apporter de la valeur avec un exemple concret
+function templateJ12(b: string, c: string, g: string): EmailVariant {
   return {
-    angle: "Preuve sociale",
-    angleKey: "social",
-    subject: `Ce que deux marques mode ont en commun avec ${b}`,
+    angle: "Résultat concret (J+12)",
+    angleKey: "j12",
+    subject: `Un exemple concret pour ${b}`,
     body: `Bonjour ${c},
 
-J'accompagne actuellement deux marques de mode dans leur stratégie Klaviyo. Elles partageaient le même problème : ${g}.
+Pour vous donner un exemple tangible : j'ai récemment aidé une marque mode à générer 10 560 € supplémentaires en 2 mois, en comblant exactement le même type de gap que j'ai identifié chez ${b}, à savoir ${g}.
 
-En 60 jours, l'une a vu son chiffre d'affaires email progresser de +38 %. L'autre a doublé son taux de conversion post-inscription.
+L'intervention avait duré deux semaines. La mise en place est simple, non invasive, et les premiers résultats sont visibles dès le premier mois.
 
-Je pense que ${b} a exactement le même potentiel. Seriez-vous ouvert à un échange de 20 minutes cette semaine ?
+Seriez-vous intéressé par une présentation rapide de ce que cela donnerait pour ${b} ?
 
 Bien à vous,
 [Votre prénom]`,
   };
 }
 
-function angle4(b: string, c: string, g: string): EmailVariant {
+// J+21 — Question directe, chercher à comprendre le besoin
+function templateJ21(b: string, c: string, g: string): EmailVariant {
   return {
-    angle: "Rapidité de mise en place",
-    angleKey: "speed",
-    subject: `${b} opérationnel sur Klaviyo en 2 semaines`,
+    angle: "Question directe (J+21)",
+    angleKey: "j21",
+    subject: `${b} — une question directe`,
     body: `Bonjour ${c},
 
-J'ai remarqué que ${b} présente ${g}. La bonne nouvelle : c'est précisément le type de gap que je règle en 2 semaines.
+Je ne souhaite pas vous importuner, aussi je me permets une question directe : l'email marketing est-il actuellement une priorité pour ${b} ?
 
-Je suis consultant Klaviyo pour des marques e-commerce, et j'ai développé une méthode de mise en place rapide qui s'intègre sans friction à votre organisation actuelle.
+Si ce n'est pas le bon moment, je le comprends totalement. Si en revanche vous réfléchissez à optimiser votre canal email, notamment à ${g}, je serais heureux d'en discuter quelques minutes.
 
-Puis-je vous montrer concrètement ce que cela donnerait pour ${b} ?
+Un simple retour de votre part me suffira.
 
 Cordialement,
 [Votre prénom]`,
   };
 }
 
-function angle5(b: string, c: string, g: string): EmailVariant {
+// J+35 — Dernier essai avant pause, ton détendu
+function templateJ35(b: string, c: string, g: string): EmailVariant {
   return {
-    angle: "Audit gratuit",
-    angleKey: "audit",
-    subject: `Un mini-audit Klaviyo offert pour ${b}`,
+    angle: "Dernier message (J+35)",
+    angleKey: "j35",
+    subject: `Mon dernier message avant une pause, ${b}`,
     body: `Bonjour ${c},
 
-Je propose actuellement un mini-audit Klaviyo gratuit à quelques marques sélectionnées — et ${b} m'a semblé être un excellent candidat.
+Ce sera mon dernier message avant une longue pause. Je ne veux surtout pas alourdir votre boîte de réception.
 
-En 30 minutes, je vous donne un regard extérieur sur votre setup actuel, notamment sur ${g}, et vous repartez avec 3 recommandations concrètes applicables immédiatement.
+Si ${b} décide un jour de travailler sur ${g} et d'explorer ce que Klaviyo peut apporter concrètement, n'hésitez pas à me contacter directement. Je serai toujours disponible pour en discuter.
 
-Seriez-vous intéressé ? Aucun engagement, uniquement de la valeur.
+Je vous souhaite une très belle continuation.
 
 Bien à vous,
 [Votre prénom]`,
   };
 }
 
-function angle6(b: string, c: string, g: string): EmailVariant {
+// J+60 — Réactivation après silence, approche fraîche
+function templateJ60(b: string, c: string, g: string): EmailVariant {
   return {
-    angle: "Direct (3 phrases)",
-    angleKey: "direct",
-    subject: `${b} × Klaviyo`,
+    angle: "Réactivation (J+60)",
+    angleKey: "j60",
+    subject: `On reprend, ${b} ?`,
     body: `Bonjour ${c},
 
-J'ai remarqué ${g} chez ${b} — c'est un levier que je peux activer pour vous en moins de deux semaines.
+Cela fait quelques mois que nous ne nous sommes pas croisés. Je me permets de reprendre contact, car j'ai eu de nouveaux résultats intéressants sur des projets similaires à ${b}.
 
-Disponible pour un appel rapide de 15 minutes ?
+Côté ${g}, avez-vous eu l'occasion d'avancer depuis notre dernier échange ? Si le sujet est de nouveau d'actualité, je suis disponible cette semaine pour un appel rapide.
 
+Bien à vous,
 [Votre prénom]`,
   };
 }
@@ -139,11 +160,11 @@ export function generateEmailVariants(
   const g = resolveGap(gap.trim() || "l'absence d'automatisations email");
 
   return [
-    angle1(b, c, g),
-    angle2(b, c, g),
-    angle3(b, c, g),
-    angle4(b, c, g),
-    angle5(b, c, g),
-    angle6(b, c, g),
+    templateJ0(b, c, g),
+    templateJ5(b, c, g),
+    templateJ12(b, c, g),
+    templateJ21(b, c, g),
+    templateJ35(b, c, g),
+    templateJ60(b, c, g),
   ];
 }

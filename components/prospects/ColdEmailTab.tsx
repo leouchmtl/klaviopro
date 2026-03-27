@@ -2,8 +2,13 @@
 
 import { useEffect, useState } from "react";
 import type { Prospect } from "@/lib/types";
-import { GAP_LABELS, generateEmailVariants } from "@/lib/emailGenerator";
-import type { EmailVariant } from "@/lib/emailGenerator";
+import { STEP_ORDER } from "@/lib/utils";
+import {
+  GAP_LABELS,
+  generateEmailVariants,
+  suggestVariantIndex,
+} from "@/lib/emailGenerator";
+import type { EmailVariant, RelanceStep } from "@/lib/emailGenerator";
 import { getColdEmails, saveColdEmails } from "@/lib/storage";
 
 const GAP_OPTIONS = [
@@ -16,16 +21,30 @@ const GAP_OPTIONS = [
   { value: "custom",          label: "Autre (texte libre)…" },
 ];
 
+const STEP_KEY_TO_LABEL: Record<string, RelanceStep> = {
+  j0:  "J0",
+  j5:  "J+5",
+  j12: "J+12",
+  j21: "J+21",
+  j35: "J+35",
+  j60: "J+60",
+};
+
 const ANGLE_COLORS: Record<string, string> = {
-  result: "bg-emerald-100 text-emerald-800",
-  gap:    "bg-blue-100 text-blue-800",
-  social: "bg-purple-100 text-purple-800",
-  speed:  "bg-orange-100 text-orange-800",
-  audit:  "bg-teal-100 text-teal-800",
-  direct: "bg-slate-100 text-slate-700",
+  j0:  "bg-blue-100 text-blue-800",
+  j5:  "bg-yellow-100 text-yellow-800",
+  j12: "bg-orange-100 text-orange-800",
+  j21: "bg-amber-100 text-amber-800",
+  j35: "bg-purple-100 text-purple-800",
+  j60: "bg-red-100 text-red-800",
 };
 
 const DI = "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:border-blue-400 bg-white";
+
+function detectStep(prospect: Prospect): RelanceStep {
+  const nextKey = STEP_ORDER.find((k) => !prospect.steps[k].done);
+  return STEP_KEY_TO_LABEL[nextKey ?? "j0"] ?? "J0";
+}
 
 export default function ColdEmailTab({
   prospect,
@@ -34,15 +53,17 @@ export default function ColdEmailTab({
   prospect: Prospect;
   onSendViaGmail: (subject: string, body: string) => void;
 }) {
-  const [brand,       setBrand]   = useState(prospect.marque  ?? "");
-  const [contact,     setContact] = useState(prospect.contact ?? "");
-  const [gapKey,      setGapKey]  = useState(prospect.gapCrm  || "welcome_flow");
-  const [customGap,   setCustom]  = useState("");
-  const [variants,    setVariants]= useState<EmailVariant[]>([]);
-  const [activeIdx,   setActive]  = useState(0);
-  const [copied,      setCopied]  = useState<string | null>(null);
+  const currentStep = detectStep(prospect);
 
-  // Load saved variants
+  const [brand,     setBrand]   = useState(prospect.marque  ?? "");
+  const [contact,   setContact] = useState(prospect.contact ?? "");
+  const [gapKey,    setGapKey]  = useState(prospect.gapCrm  || "welcome_flow");
+  const [customGap, setCustom]  = useState("");
+  const [variants,  setVariants]= useState<EmailVariant[]>([]);
+  const [activeIdx, setActive]  = useState(suggestVariantIndex(currentStep));
+  const [copied,    setCopied]  = useState<string | null>(null);
+
+  // Load saved variants from localStorage
   useEffect(() => {
     const saved = getColdEmails(prospect.id);
     if (saved) {
@@ -51,8 +72,10 @@ export default function ColdEmailTab({
       setGapKey(saved.gap in GAP_LABELS || saved.gap === "custom" ? saved.gap : "custom");
       if (!(saved.gap in GAP_LABELS)) setCustom(saved.gap);
       setVariants(saved.variants);
+      // Always auto-select the step-matching variant on load
+      setActive(suggestVariantIndex(currentStep));
     }
-  }, [prospect.id]);
+  }, [prospect.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function effectiveGap() {
     return gapKey === "custom" ? customGap : gapKey;
@@ -61,8 +84,9 @@ export default function ColdEmailTab({
   function generate() {
     const gap = effectiveGap();
     const v = generateEmailVariants(brand, contact, gap);
+    const suggested = suggestVariantIndex(currentStep);
     setVariants(v);
-    setActive(0);
+    setActive(suggested);
     saveColdEmails(prospect.id, { brand, contact, gap, variants: v });
   }
 
@@ -76,6 +100,18 @@ export default function ColdEmailTab({
 
   return (
     <div className="p-5 space-y-5">
+      {/* Step context banner */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
+        <span className="text-blue-500 text-sm">📍</span>
+        <span className="text-sm text-blue-800">
+          Vous en êtes à l&apos;étape{" "}
+          <span className="font-semibold">{currentStep}</span> avec ce prospect.
+          {variants.length > 0 && (
+            <span className="text-blue-600"> Template correspondant sélectionné.</span>
+          )}
+        </span>
+      </div>
+
       {/* Input fields */}
       <div className="space-y-3">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Paramètres</p>
@@ -129,30 +165,36 @@ export default function ColdEmailTab({
           onClick={generate}
           className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
         >
-          {variants.length > 0 ? "Regénérer les variantes" : "Générer les 6 variantes"}
+          {variants.length > 0 ? "Regénérer les variantes" : "Générer les 6 templates"}
         </button>
       </div>
 
       {/* Variant cards */}
       {variants.length > 0 && (
         <div className="space-y-3">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Variantes générées</p>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Templates par étape</p>
 
-          {/* Angle selector tabs */}
+          {/* Step selector pills */}
           <div className="flex flex-wrap gap-1.5">
-            {variants.map((v, i) => (
-              <button
-                key={v.angleKey}
-                onClick={() => setActive(i)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                  i === activeIdx
-                    ? ANGLE_COLORS[v.angleKey] + " ring-2 ring-offset-1 ring-blue-400"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
-              >
-                {i + 1}. {v.angle}
-              </button>
-            ))}
+            {variants.map((v, i) => {
+              const isSuggested = i === suggestVariantIndex(currentStep);
+              return (
+                <button
+                  key={v.angleKey}
+                  onClick={() => setActive(i)}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                    i === activeIdx
+                      ? (ANGLE_COLORS[v.angleKey] ?? "bg-slate-200 text-slate-700") +
+                        " ring-2 ring-offset-1 ring-blue-400"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                  title={isSuggested ? "Template recommandé pour cette étape" : undefined}
+                >
+                  {isSuggested && <span className="mr-1">★</span>}
+                  {v.angle}
+                </button>
+              );
+            })}
           </div>
 
           {/* Active variant card */}
