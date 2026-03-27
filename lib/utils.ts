@@ -1,16 +1,16 @@
 import type { Statut, Prospect, ProspectSteps } from "./types";
 
-// Days to add per statut (null = no follow-up needed)
+// Days to add from dernierContact (or today) per statut (null = no follow-up)
 const STATUT_DELAY: Record<Statut, number | null> = {
-  "À contacter": 0,
-  "Relance J+5": 5,
-  "Relance J+12": 12,
-  "Relance J+21": 21,
-  "Relance J+35": 35,
-  "Relance J+60": 60,
-  Client: null,
-  Refus: null,
-  "Sans besoin": null,
+  "À contacter": 5,
+  "Relance J+5":  7,
+  "Relance J+12": 9,
+  "Relance J+21": 14,
+  "Relance J+35": 25,
+  "Relance J+60": null, // séquence terminée
+  Client:         null,
+  Refus:          null,
+  "Sans besoin":  null,
 };
 
 export function calcProchaineRelance(
@@ -20,11 +20,6 @@ export function calcProchaineRelance(
   const delay = STATUT_DELAY[statut];
   if (delay === null) return null;
   const base = dernierContact ? new Date(dernierContact) : new Date();
-  if (delay === 0) {
-    const t = new Date();
-    t.setHours(0, 0, 0, 0);
-    return toDateStr(t);
-  }
   const result = new Date(base);
   result.setDate(result.getDate() + delay);
   return toDateStr(result);
@@ -108,13 +103,13 @@ export function calcNextRelanceFromSteps(steps: ProspectSteps): string | null {
   return steps.j0.date ?? today();
 }
 
-// CSS color for a dynamic relance date
+// CSS color for a relance date
 export function relanceDateColor(date: string | null): string {
   if (!date) return "text-slate-400";
   const t = today();
   if (date < t) return "text-red-600";
   if (date === t) return "text-orange-500";
-  return "text-slate-400";
+  return "text-green-600";
 }
 
 // ── Misc ─────────────────────────────────────────────────────────────────────

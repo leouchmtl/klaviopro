@@ -1,4 +1,4 @@
-import type { Prospect, KPIMonth, ProspectSteps } from "./types";
+import type { Prospect, KPIMonth, ProspectSteps, EmailRecord } from "./types";
 import { withRelance } from "./utils";
 
 const PROSPECTS_KEY = "klaviopro_prospects";
@@ -128,4 +128,30 @@ export function upsertKPIMonth(entry: KPIMonth): void {
 
 export function getKPIMonth(mois: string): KPIMonth {
   return getKPI().find((k) => k.mois === mois) ?? { mois, tauxOuverture: 0, tauxReponse: 0 };
+}
+
+// ── Email records (per prospect) ──────────────────────────────────────────────
+
+const EMAILS_PREFIX = "klaviopro_emails_";
+
+export function getEmails(prospectId: string): EmailRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(EMAILS_PREFIX + prospectId);
+    return raw ? (JSON.parse(raw) as EmailRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveEmailRecord(prospectId: string, record: EmailRecord): void {
+  const all = getEmails(prospectId);
+  const idx = all.findIndex((e) => e.id === record.id);
+  if (idx >= 0) all[idx] = record; else all.unshift(record);
+  localStorage.setItem(EMAILS_PREFIX + prospectId, JSON.stringify(all));
+}
+
+export function deleteEmailRecord(prospectId: string, emailId: string): void {
+  const filtered = getEmails(prospectId).filter((e) => e.id !== emailId);
+  localStorage.setItem(EMAILS_PREFIX + prospectId, JSON.stringify(filtered));
 }

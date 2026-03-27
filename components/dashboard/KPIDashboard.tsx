@@ -7,6 +7,7 @@ import {
   upsertKPIMonth,
   getProspects,
   countCheckedStepsByMonth,
+  countProspectsChaudes,
 } from "@/lib/storage";
 
 function monthLabel(mois: string): string {
@@ -56,6 +57,7 @@ export default function KPIDashboard() {
   const [totalProspects, setTotalProspects] = useState(0);
   const [totalClients, setTotalClients] = useState(0);
   const [emailsEnvoyes, setEmailsEnvoyes] = useState(0); // auto from steps
+  const [prospectsChaudes, setProspectsChaudes] = useState(0);
   const [chartData, setChartData] = useState<ChartEntry[]>([]);
 
   function loadAll(m: string) {
@@ -69,6 +71,7 @@ export default function KPIDashboard() {
 
     // Auto-count checked steps for selected month
     setEmailsEnvoyes(countCheckedStepsByMonth(m));
+    setProspectsChaudes(countProspectsChaudes());
 
     // Chart: last 6 months
     const months = lastNMonths(6);
@@ -139,7 +142,7 @@ export default function KPIDashboard() {
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <KPICard
           label="Emails envoyés"
           value={emailsEnvoyes}
@@ -166,6 +169,14 @@ export default function KPIDashboard() {
           unit="%"
           color="text-purple-600"
           subtitle={`${totalClients} client${totalClients !== 1 ? "s" : ""} / ${totalProspects} prospects`}
+          auto
+        />
+        <KPICard
+          label="Prospects chauds 🔥"
+          value={prospectsChaudes}
+          unit=""
+          color="text-yellow-600"
+          subtitle="Ouvertures multiples + en conversation"
           auto
         />
       </div>

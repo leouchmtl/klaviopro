@@ -61,3 +61,11 @@ export interface KPIMonth {
   tauxOuverture: number;
   tauxReponse: number;
 }
+
+export interface EmailRecord {
+  id: string;
+  date: string;           // "YYYY-MM-DD"
+  subject: string;
+  body: string;
+  direction: "envoyé" | "reçu";
+}

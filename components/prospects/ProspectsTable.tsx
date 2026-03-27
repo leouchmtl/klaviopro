@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps } from "@/lib/types";
+import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord } from "@/lib/types";
 import { STATUTS, SECTEURS } from "@/lib/types";
 import {
   getProspects,
@@ -10,6 +10,9 @@ import {
   deleteProspect,
   saveProspects,
   emptySteps,
+  getEmails,
+  saveEmailRecord,
+  deleteEmailRecord,
 } from "@/lib/storage";
 import {
   formatDateFR,
@@ -17,11 +20,10 @@ import {
   parseCSV,
   withRelance,
   today,
-  calcNextRelanceFromSteps,
   relanceDateColor,
 } from "@/lib/utils";
 
-// ── Inline cell helpers ───────────────────────────────────────────────────────
+// ── Inline cell helpers ────────────────────────────────────────────────────────
 
 function EditableCell({
   value,
@@ -124,7 +126,7 @@ function StepCell({ step, onUpdate }: { step: StepEntry; onUpdate: (s: StepEntry
   );
 }
 
-// ── Row ───────────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const STEP_KEYS: { key: keyof ProspectSteps; label: string }[] = [
   { key: "j0",  label: "J0"   },
@@ -135,21 +137,34 @@ const STEP_KEYS: { key: keyof ProspectSteps; label: string }[] = [
   { key: "j60", label: "J+60" },
 ];
 
+const STEP_TO_STATUT: Record<keyof ProspectSteps, Statut> = {
+  j0:  "À contacter",
+  j5:  "Relance J+5",
+  j12: "Relance J+12",
+  j21: "Relance J+21",
+  j35: "Relance J+35",
+  j60: "Relance J+60",
+};
+
+// ── ProspectRow ───────────────────────────────────────────────────────────────
+
 function ProspectRow({
   prospect: init,
   isSelected,
   onToggleSelect,
   onDelete,
   autoFocusField,
+  onOpen,
 }: {
   prospect: Prospect;
   isSelected: boolean;
   onToggleSelect: (id: string) => void;
   onDelete: (id: string) => void;
   autoFocusField?: string;
+  onOpen: (id: string) => void;
 }) {
   const [p, setP] = useState<Prospect>(init);
-  useEffect(() => { setP(init); }, [init.id]);
+  useEffect(() => { setP(init); }, [init]);
 
   function save<K extends keyof Prospect>(field: K, value: Prospect[K]) {
     const updated = withRelance({ ...p, [field]: value });
@@ -158,17 +173,21 @@ function ProspectRow({
   }
 
   function saveStep(key: keyof ProspectSteps, entry: StepEntry) {
-    const updated = { ...p, steps: { ...p.steps, [key]: entry } };
-    setP(updated);
-    updateProspect(updated);
+    let updated: Prospect = { ...p, steps: { ...p.steps, [key]: entry } };
+    if (entry.done) {
+      // Auto-update statut and dernierContact when a step is checked
+      updated.statut = STEP_TO_STATUT[key];
+      updated.dernierContact = entry.date ?? today();
+    }
+    const saved = withRelance(updated);
+    setP(saved);
+    updateProspect(saved);
   }
 
   const chaud = p.ouverturesMultiples && p.enConversation;
   const { bg, text } = STATUT_COLORS[p.statut];
-
-  // Dynamic prochaine relance from steps
-  const nextDate = calcNextRelanceFromSteps(p.steps);
-  const nextColor = relanceDateColor(nextDate);
+  const pr = p.prochaineRelance;
+  const prColor = relanceDateColor(pr);
 
   return (
     <tr className={`border-b border-slate-100 transition-colors ${chaud ? "bg-amber-50 hover:bg-amber-100/60" : "hover:bg-slate-50/50"}`}>
@@ -281,25 +300,36 @@ function ProspectRow({
         />
       </td>
 
-      {/* Prochaine relance — dynamic from steps */}
-      <td className="px-2 py-2 whitespace-nowrap min-w-[105px]">
-        {nextDate === null ? (
-          <span className="text-slate-400 text-xs">✅ Terminé</span>
+      {/* Prochaine relance — statut-based */}
+      <td className="px-2 py-2 whitespace-nowrap min-w-[120px]">
+        {pr === null ? (
+          p.statut === "Relance J+60" ? (
+            <span className="text-green-600 text-xs">✅ Séquence terminée</span>
+          ) : (
+            <span className="text-slate-400">—</span>
+          )
         ) : (
-          <span className={`text-sm font-medium ${nextColor}`}>
-            {nextColor === "text-red-600" ? "⚠ " : ""}
-            {formatDateFR(nextDate)}
+          <span className={`text-sm font-medium ${prColor}`}>
+            {prColor === "text-red-600" ? "⚠ " : ""}
+            {formatDateFR(pr)}
           </span>
         )}
       </td>
 
-      {/* Delete */}
-      <td className="px-2 py-2 text-center">
-        <button
-          onClick={() => { if (!confirm("Supprimer ce prospect ?")) return; onDelete(p.id); }}
-          className="text-slate-300 hover:text-red-500 transition-colors text-lg"
-          title="Supprimer"
-        >×</button>
+      {/* Actions: open drawer + delete */}
+      <td className="px-2 py-2 text-center w-16">
+        <div className="flex items-center justify-center gap-1">
+          <button
+            onClick={() => onOpen(p.id)}
+            className="text-slate-400 hover:text-blue-600 transition-colors text-base px-0.5"
+            title="Ouvrir les détails"
+          >⋯</button>
+          <button
+            onClick={() => { if (!confirm("Supprimer ce prospect ?")) return; onDelete(p.id); }}
+            className="text-slate-300 hover:text-red-500 transition-colors text-lg"
+            title="Supprimer"
+          >×</button>
+        </div>
       </td>
     </tr>
   );
@@ -339,12 +369,7 @@ function applyFilters(prospects: Prospect[], f: Filters): Prospect[] {
 // ── Bulk action bar ───────────────────────────────────────────────────────────
 
 function BulkBar({
-  selectedIds,
-  onClear,
-  onBulkStatut,
-  onBulkSecteur,
-  onBulkDone,
-  onBulkDelete,
+  selectedIds, onClear, onBulkStatut, onBulkSecteur, onBulkDone, onBulkDelete,
 }: {
   selectedIds: Set<string>;
   onClear: () => void;
@@ -359,7 +384,6 @@ function BulkBar({
   return (
     <div className="flex flex-wrap items-center gap-3 bg-blue-600 text-white rounded-xl px-4 py-3 mb-4 shadow-lg">
       <span className="font-semibold text-sm">{n} sélectionné{n > 1 ? "s" : ""}</span>
-
       <span className="text-blue-400 text-xs">|</span>
 
       <label className="text-xs font-medium">Statut :</label>
@@ -401,6 +425,453 @@ function BulkBar({
   );
 }
 
+// ── Prospect Drawer ───────────────────────────────────────────────────────────
+
+function ProspectDrawer({
+  prospect: init,
+  onClose,
+}: {
+  prospect: Prospect;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"infos" | "emails">("infos");
+  const [p, setP] = useState<Prospect>(init);
+  const [emails, setEmails] = useState<EmailRecord[]>([]);
+
+  useEffect(() => {
+    setEmails(getEmails(p.id));
+  }, [p.id]);
+
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", fn);
+    return () => document.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  function save<K extends keyof Prospect>(field: K, value: Prospect[K]) {
+    const updated = withRelance({ ...p, [field]: value });
+    setP(updated);
+    updateProspect(updated);
+  }
+
+  function saveStep(key: keyof ProspectSteps, entry: StepEntry) {
+    let updated: Prospect = { ...p, steps: { ...p.steps, [key]: entry } };
+    if (entry.done) {
+      updated.statut = STEP_TO_STATUT[key];
+      updated.dernierContact = entry.date ?? today();
+    }
+    const saved = withRelance(updated);
+    setP(saved);
+    updateProspect(saved);
+  }
+
+  function refreshEmails() {
+    setEmails(getEmails(p.id));
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+
+      {/* Panel */}
+      <div className="fixed inset-y-0 right-0 w-[500px] max-w-[100vw] bg-white shadow-2xl z-50 flex flex-col">
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-slate-200 shrink-0">
+          <div className="min-w-0">
+            <h2 className="font-bold text-lg text-slate-900 truncate">{p.marque || "Nouveau prospect"}</h2>
+            {p.email && <p className="text-sm text-slate-500 mt-0.5 truncate">{p.email}</p>}
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-700 text-2xl leading-none ml-4 shrink-0 mt-0.5"
+          >×</button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-slate-200 shrink-0">
+          {(["infos", "emails"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-5 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                tab === t
+                  ? "border-blue-600 text-blue-600"
+                  : "border-transparent text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {t === "infos" ? "Infos" : `Emails (${emails.length})`}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          {tab === "infos" ? (
+            <InfosTab p={p} onSave={save} onSaveStep={saveStep} />
+          ) : (
+            <EmailsTab prospect={p} emails={emails} onRefresh={refreshEmails} />
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── InfosTab ──────────────────────────────────────────────────────────────────
+
+function InfosTab({
+  p,
+  onSave,
+  onSaveStep,
+}: {
+  p: Prospect;
+  onSave: <K extends keyof Prospect>(field: K, value: Prospect[K]) => void;
+  onSaveStep: (key: keyof ProspectSteps, entry: StepEntry) => void;
+}) {
+  const { bg, text } = STATUT_COLORS[p.statut];
+  const pr = p.prochaineRelance;
+  const prColor = relanceDateColor(pr);
+
+  return (
+    <div className="p-5 space-y-5">
+      {/* Chaud indicator */}
+      {p.ouverturesMultiples && p.enConversation && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-800 font-medium">
+          🔥 Prospect chaud
+        </div>
+      )}
+
+      {/* Text fields */}
+      <div className="grid grid-cols-2 gap-4">
+        <DField label="Marque">
+          <input
+            key={p.id + "-marque"}
+            type="text"
+            defaultValue={p.marque}
+            onBlur={(e) => onSave("marque", e.target.value)}
+            className={DINPUT}
+            placeholder="Marque"
+          />
+        </DField>
+        <DField label="Contact">
+          <input
+            key={p.id + "-contact"}
+            type="text"
+            defaultValue={p.contact}
+            onBlur={(e) => onSave("contact", e.target.value)}
+            className={DINPUT}
+            placeholder="Nom"
+          />
+        </DField>
+        <DField label="Email">
+          <input
+            key={p.id + "-email"}
+            type="email"
+            defaultValue={p.email}
+            onBlur={(e) => onSave("email", e.target.value)}
+            className={DINPUT}
+            placeholder="email@…"
+          />
+        </DField>
+        <DField label="Gap CRM">
+          <input
+            key={p.id + "-gapcr"}
+            type="text"
+            defaultValue={p.gapCrm}
+            onBlur={(e) => onSave("gapCrm", e.target.value)}
+            className={DINPUT}
+            placeholder="Réf."
+          />
+        </DField>
+      </div>
+
+      {/* Statut + Secteur */}
+      <div className="grid grid-cols-2 gap-4">
+        <DField label="Statut">
+          <select
+            value={p.statut}
+            onChange={(e) => onSave("statut", e.target.value as Statut)}
+            className={DSEL}
+          >
+            {STATUTS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </DField>
+        <DField label="Secteur">
+          <select
+            value={p.secteur}
+            onChange={(e) => onSave("secteur", e.target.value as Secteur)}
+            className={DSEL}
+          >
+            {SECTEURS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </DField>
+      </div>
+
+      {/* Dates */}
+      <div className="grid grid-cols-2 gap-4">
+        <DField label="Dernier contact">
+          <input
+            type="date"
+            value={p.dernierContact ?? ""}
+            onChange={(e) => onSave("dernierContact", e.target.value || null)}
+            className={DINPUT}
+          />
+        </DField>
+        <DField label="Prochaine relance">
+          <div className={`flex items-center h-[38px] px-3 text-sm font-medium rounded-lg bg-slate-50 border border-slate-200 ${prColor}`}>
+            {pr === null
+              ? (p.statut === "Relance J+60" ? "✅ Séquence terminée" : "—")
+              : `${prColor === "text-red-600" ? "⚠ " : ""}${formatDateFR(pr)}`}
+          </div>
+        </DField>
+      </div>
+
+      {/* Notes */}
+      <DField label="Notes">
+        <textarea
+          key={p.id + "-notes"}
+          defaultValue={p.notes}
+          onBlur={(e) => onSave("notes", e.target.value)}
+          rows={3}
+          className={`${DINPUT} resize-none`}
+          placeholder="Notes…"
+        />
+      </DField>
+
+      {/* Checkboxes */}
+      <div className="flex gap-6">
+        <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
+          <input
+            type="checkbox"
+            checked={p.ouverturesMultiples}
+            onChange={(e) => onSave("ouverturesMultiples", e.target.checked)}
+            className="w-4 h-4 accent-orange-500"
+          />
+          Ouvertures multiples
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
+          <input
+            type="checkbox"
+            checked={p.enConversation}
+            onChange={(e) => onSave("enConversation", e.target.checked)}
+            className="w-4 h-4 accent-green-500"
+          />
+          En conversation
+        </label>
+      </div>
+
+      {/* Séquence */}
+      <div>
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Séquence de relance</p>
+        <div className="space-y-2">
+          {STEP_KEYS.map(({ key, label }) => (
+            <div key={key} className="flex items-center gap-3">
+              <span className="text-xs text-slate-500 w-10 shrink-0 font-medium">{label}</span>
+              <input
+                type="checkbox"
+                checked={p.steps[key].done}
+                onChange={(e) => {
+                  const done = e.target.checked;
+                  onSaveStep(key, { done, date: done ? (p.steps[key].date ?? today()) : p.steps[key].date });
+                }}
+                className="w-4 h-4 accent-blue-600 cursor-pointer"
+              />
+              {p.steps[key].done && (
+                <input
+                  type="date"
+                  value={p.steps[key].date ?? ""}
+                  onChange={(e) => onSaveStep(key, { ...p.steps[key], date: e.target.value || null })}
+                  className="text-xs border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-blue-400"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── EmailsTab ─────────────────────────────────────────────────────────────────
+
+function EmailsTab({
+  prospect,
+  emails,
+  onRefresh,
+}: {
+  prospect: Prospect;
+  emails: EmailRecord[];
+  onRefresh: () => void;
+}) {
+  const [mode, setMode] = useState<"idle" | "compose" | "received">("idle");
+  const [compose, setCompose] = useState({ subject: "", body: "" });
+  const [received, setReceived] = useState({ date: today(), subject: "", body: "" });
+
+  function handleSend() {
+    if (prospect.email) {
+      const url = `mailto:${prospect.email}?subject=${encodeURIComponent(compose.subject)}&body=${encodeURIComponent(compose.body)}`;
+      window.open(url, "_blank");
+    }
+    saveEmailRecord(prospect.id, {
+      id: crypto.randomUUID(),
+      date: today(),
+      subject: compose.subject,
+      body: compose.body,
+      direction: "envoyé",
+    });
+    onRefresh();
+    setMode("idle");
+    setCompose({ subject: "", body: "" });
+  }
+
+  function handleLogReceived() {
+    saveEmailRecord(prospect.id, {
+      id: crypto.randomUUID(),
+      date: received.date || today(),
+      subject: received.subject,
+      body: received.body,
+      direction: "reçu",
+    });
+    onRefresh();
+    setMode("idle");
+    setReceived({ date: today(), subject: "", body: "" });
+  }
+
+  return (
+    <div className="p-5 space-y-4">
+      {/* Actions */}
+      {mode === "idle" && (
+        <div className="flex gap-2">
+          <button onClick={() => setMode("compose")} className={DBTN1}>
+            ✉ Rédiger un email
+          </button>
+          <button onClick={() => setMode("received")} className={DBTN2}>
+            + Enregistrer un reçu
+          </button>
+        </div>
+      )}
+
+      {/* Compose form */}
+      {mode === "compose" && (
+        <div className="border border-slate-200 rounded-xl p-4 space-y-3 bg-slate-50">
+          <div className="flex items-center justify-between">
+            <p className="font-semibold text-sm text-slate-800">Rédiger un email</p>
+            <button onClick={() => setMode("idle")} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+          </div>
+          <p className="text-xs text-slate-500">
+            À : <span className="font-medium text-slate-700">{prospect.email || <em>email non renseigné</em>}</span>
+          </p>
+          <input
+            type="text"
+            placeholder="Objet"
+            value={compose.subject}
+            onChange={(e) => setCompose((d) => ({ ...d, subject: e.target.value }))}
+            className={DINPUT}
+          />
+          <textarea
+            placeholder="Corps du message…"
+            value={compose.body}
+            onChange={(e) => setCompose((d) => ({ ...d, body: e.target.value }))}
+            rows={5}
+            className={`${DINPUT} resize-none`}
+          />
+          <div className="flex gap-2">
+            <button onClick={handleSend} className={DBTN1}>
+              Envoyer via messagerie →
+            </button>
+            <button onClick={() => setMode("idle")} className={DBTN2}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      {/* Log received form */}
+      {mode === "received" && (
+        <div className="border border-slate-200 rounded-xl p-4 space-y-3 bg-slate-50">
+          <div className="flex items-center justify-between">
+            <p className="font-semibold text-sm text-slate-800">Enregistrer une réponse reçue</p>
+            <button onClick={() => setMode("idle")} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <DField label="Date">
+              <input
+                type="date"
+                value={received.date}
+                onChange={(e) => setReceived((d) => ({ ...d, date: e.target.value }))}
+                className={DINPUT}
+              />
+            </DField>
+            <DField label="Objet (optionnel)">
+              <input
+                type="text"
+                placeholder="Objet"
+                value={received.subject}
+                onChange={(e) => setReceived((d) => ({ ...d, subject: e.target.value }))}
+                className={DINPUT}
+              />
+            </DField>
+          </div>
+          <textarea
+            placeholder="Extrait du message (optionnel)…"
+            value={received.body}
+            onChange={(e) => setReceived((d) => ({ ...d, body: e.target.value }))}
+            rows={3}
+            className={`${DINPUT} resize-none`}
+          />
+          <div className="flex gap-2">
+            <button onClick={handleLogReceived} className={DBTN1}>Enregistrer</button>
+            <button onClick={() => setMode("idle")} className={DBTN2}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      {/* Email list */}
+      {emails.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">Aucun email enregistré.</p>
+      ) : (
+        <div className="space-y-2">
+          {emails.map((email) => (
+            <div
+              key={email.id}
+              className={`rounded-xl border p-3 ${
+                email.direction === "envoyé"
+                  ? "border-blue-100 bg-blue-50"
+                  : "border-green-100 bg-green-50"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
+                      email.direction === "envoyé"
+                        ? "bg-blue-100 text-blue-700"
+                        : "bg-green-100 text-green-700"
+                    }`}>
+                      {email.direction === "envoyé" ? "↗ Envoyé" : "↙ Reçu"}
+                    </span>
+                    <span className="text-xs text-slate-400">{formatDateFR(email.date)}</span>
+                  </div>
+                  {email.subject && (
+                    <p className="text-sm font-medium text-slate-800 truncate">{email.subject}</p>
+                  )}
+                  {email.body && (
+                    <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{email.body}</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => { deleteEmailRecord(prospect.id, email.id); onRefresh(); }}
+                  className="text-slate-300 hover:text-red-400 text-lg leading-none shrink-0"
+                  title="Supprimer"
+                >×</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ProspectsTable() {
@@ -408,6 +879,7 @@ export default function ProspectsTable() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [newRowId, setNewRowId] = useState<string | null>(null);
+  const [drawerProspectId, setDrawerProspectId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setProspects(getProspects()); }, []);
@@ -421,6 +893,16 @@ export default function ProspectsTable() {
   const visible = applyFilters(prospects, filters);
   const hasFilters = filters.statut !== "Tous" || filters.secteur !== "Tous" ||
     filters.dcFrom || filters.dcTo || filters.prFrom || filters.prTo || filters.chaudsOnly;
+
+  const drawerProspect = drawerProspectId
+    ? prospects.find((p) => p.id === drawerProspectId) ?? null
+    : null;
+
+  function handleOpenDrawer(id: string) { setDrawerProspectId(id); }
+  function handleCloseDrawer() {
+    setDrawerProspectId(null);
+    reload(); // sync table after drawer edits
+  }
 
   // ── Selection ──────────────────────────────────────────────────────────────
 
@@ -469,7 +951,6 @@ export default function ProspectsTable() {
     const todayStr = today();
     const updated = getProspects().map((p) => {
       if (!ids.has(p.id)) return p;
-      // Find first unchecked step and check it with today
       const steps = { ...p.steps };
       const order = ["j0", "j5", "j12", "j21", "j35", "j60"] as const;
       for (const key of order) {
@@ -631,7 +1112,6 @@ export default function ProspectsTable() {
           <table className="w-full text-sm border-collapse">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                {/* Select all */}
                 <th className="px-2 py-3 w-8 text-center">
                   <input
                     type="checkbox"
@@ -675,6 +1155,7 @@ export default function ProspectsTable() {
                     onToggleSelect={toggleSelect}
                     onDelete={handleDelete}
                     autoFocusField={p.id === newRowId ? "marque" : undefined}
+                    onOpen={handleOpenDrawer}
                   />
                 ))
               )}
@@ -682,6 +1163,14 @@ export default function ProspectsTable() {
           </table>
         </div>
       </div>
+
+      {/* Drawer */}
+      {drawerProspect && (
+        <ProspectDrawer
+          prospect={drawerProspect}
+          onClose={handleCloseDrawer}
+        />
+      )}
     </>
   );
 }
@@ -705,10 +1194,26 @@ function Fld({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-const SEL = "border border-slate-300 rounded-lg text-sm px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500";
-const DI  = "border border-slate-300 rounded-lg text-sm px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-[128px]";
+function DField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+// Table filter styles
+const SEL  = "border border-slate-300 rounded-lg text-sm px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500";
+const DI   = "border border-slate-300 rounded-lg text-sm px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-[128px]";
 const BTN1 = "px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors";
 const BTN2 = "px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors";
+
+// Drawer form styles
+const DINPUT = "w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+const DSEL   = "w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+const DBTN1  = "px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors";
+const DBTN2  = "px-3 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors";
 
 function downloadTemplate() {
   const header = "Marque,Secteur,Contact,Email,Gap CRM,Statut,Notes,Dernier contact";
