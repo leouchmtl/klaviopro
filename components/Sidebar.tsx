@@ -6,8 +6,9 @@ import { useEffect, useState } from "react";
 
 const NAV = [
   { href: "/prospects", label: "Prospects",       icon: "👥" },
-  { href: "/calendar",  label: "Calendrier",      icon: "📅" },
-  { href: "/dashboard", label: "Tableau de bord", icon: "📊" },
+  { href: "/calendar",  label: "Calendrier",       icon: "📅" },
+  { href: "/dashboard", label: "Tableau de bord",  icon: "📊" },
+  { href: "/settings",  label: "Paramètres",        icon: "⚙️" },
 ];
 
 const STORAGE_KEY = "klaviopro_sidebar_collapsed";
@@ -18,7 +19,13 @@ export default function Sidebar() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setCollapsed(localStorage.getItem(STORAGE_KEY) === "true");
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved !== null) {
+      setCollapsed(saved === "true");
+    } else {
+      // Default: collapsed on screens narrower than 1280px
+      setCollapsed(window.innerWidth < 1280);
+    }
     setMounted(true);
   }, []);
 
@@ -28,7 +35,6 @@ export default function Sidebar() {
     localStorage.setItem(STORAGE_KEY, String(next));
   }
 
-  // Avoid layout shift before JS runs
   if (!mounted) {
     return <aside className="w-56 shrink-0 bg-slate-900 min-h-screen" />;
   }

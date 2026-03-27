@@ -1,0 +1,175 @@
+// Gmail API helpers — pure functions, no Next.js dependencies
+
+const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1";
+const TOKEN_URL  = "https://oauth2.googleapis.com/token";
+const AUTH_URL   = "https://accounts.google.com/o/oauth2/v2/auth";
+
+export const GMAIL_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/userinfo.email",
+].join(" ");
+
+// ── OAuth ─────────────────────────────────────────────────────────────────────
+
+export function buildAuthUrl(redirectUri: string): string {
+  return `${AUTH_URL}?${new URLSearchParams({
+    client_id:     process.env.GOOGLE_CLIENT_ID!,
+    redirect_uri:  redirectUri,
+    response_type: "code",
+    scope:         GMAIL_SCOPES,
+    access_type:   "offline",
+    prompt:        "consent",
+  })}`;
+}
+
+export interface TokenResponse {
+  access_token:  string;
+  refresh_token?: string;
+  expires_in:    number;
+}
+
+export async function exchangeCode(
+  code: string,
+  redirectUri: string
+): Promise<TokenResponse> {
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id:     process.env.GOOGLE_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      redirect_uri:  redirectUri,
+      grant_type:    "authorization_code",
+    }),
+  });
+  if (!res.ok) throw new Error("Token exchange failed");
+  return res.json();
+}
+
+export async function refreshToken(
+  refreshTok: string
+): Promise<{ access_token: string; expires_in: number }> {
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      refresh_token:  refreshTok,
+      client_id:      process.env.GOOGLE_CLIENT_ID!,
+      client_secret:  process.env.GOOGLE_CLIENT_SECRET!,
+      grant_type:     "refresh_token",
+    }),
+  });
+  if (!res.ok) throw new Error("Token refresh failed");
+  return res.json();
+}
+
+// ── Core fetch ────────────────────────────────────────────────────────────────
+
+async function gFetch(path: string, accessToken: string, opts?: RequestInit) {
+  const res = await fetch(`${GMAIL_BASE}${path}`, {
+    ...opts,
+    headers: {
+      Authorization:  `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...(opts?.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Gmail ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+// ── Messages ──────────────────────────────────────────────────────────────────
+
+export interface GmailMsg {
+  id:        string;
+  date:      string;       // YYYY-MM-DD
+  subject:   string;
+  from:      string;
+  snippet:   string;
+  direction: "envoyé" | "reçu";
+}
+
+function hdr(headers: { name: string; value: string }[], name: string) {
+  return headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
+}
+
+function toDateStr(s: string): string {
+  try {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+  } catch { return ""; }
+}
+
+export async function fetchMessages(
+  accessToken: string,
+  prospectEmail: string,
+  maxResults = 20
+): Promise<GmailMsg[]> {
+  const q = `from:${prospectEmail} OR to:${prospectEmail}`;
+  const list = await gFetch(
+    `/users/me/messages?q=${encodeURIComponent(q)}&maxResults=${maxResults}`,
+    accessToken
+  );
+  if (!list.messages?.length) return [];
+
+  const msgs: GmailMsg[] = await Promise.all(
+    (list.messages as { id: string }[]).map(async ({ id }) => {
+      const msg = await gFetch(
+        `/users/me/messages/${id}?format=metadata&metadataHeaders=Subject,Date,From,To`,
+        accessToken
+      );
+      const h: { name: string; value: string }[] = msg.payload?.headers ?? [];
+      const from = hdr(h, "From");
+      return {
+        id,
+        date:      toDateStr(hdr(h, "Date")),
+        subject:   hdr(h, "Subject"),
+        from,
+        snippet:   (msg.snippet as string) ?? "",
+        direction: from.toLowerCase().includes(prospectEmail.toLowerCase())
+          ? ("reçu" as const)
+          : ("envoyé" as const),
+      };
+    })
+  );
+
+  return msgs.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export async function sendMessage(
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string
+): Promise<{ id: string }> {
+  const raw = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "MIME-Version: 1.0",
+    "",
+    body,
+  ].join("\r\n");
+
+  const encoded = Buffer.from(raw)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  return gFetch("/users/me/messages/send", accessToken, {
+    method: "POST",
+    body: JSON.stringify({ raw: encoded }),
+  });
+}
+
+export async function getProfile(
+  accessToken: string
+): Promise<{ emailAddress: string }> {
+  return gFetch("/users/me/profile", accessToken);
+}

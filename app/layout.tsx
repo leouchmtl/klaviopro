@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
+import Providers from "./providers";
 
 export const metadata: Metadata = {
   title: "KlavioPro — CRM & Relances",
@@ -15,8 +16,10 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className="flex min-h-screen">
-        <Sidebar />
-        <main className="flex-1 overflow-auto p-8">{children}</main>
+        <Providers>
+          <Sidebar />
+          <main className="flex-1 overflow-auto p-8">{children}</main>
+        </Providers>
       </body>
     </html>
   );
