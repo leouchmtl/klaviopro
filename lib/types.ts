@@ -45,6 +45,8 @@ export interface Prospect {
   secteur: Secteur;
   contact: string;
   email: string;
+  website: string;           // brand website / domain for enrichment
+  instagramHandle: string;   // without @
   gapCrm: string;
   statut: Statut;
   notes: string;
@@ -55,6 +57,15 @@ export interface Prospect {
   prochaineRelance: string | null; // auto-calculated
   relanceFaite: boolean;
   createdAt: string;
+}
+
+export interface EnrichmentData {
+  platform: string;          // "Shopify ✅" | "Autre plateforme"
+  klaviyo: string;           // "Klaviyo ✅" | "Pas de Klaviyo ❌"
+  klaviyoDetected: boolean;
+  description: string;
+  instagram: string;         // "@handle · X abonnés" | "Non disponible"
+  updatedAt: string;         // ISO date
 }
 
 export interface KPIMonth {

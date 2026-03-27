@@ -91,11 +91,41 @@ export interface GmailMsg {
   subject:   string;
   from:      string;
   snippet:   string;
+  body:      string;       // decoded plain-text body
   direction: "envoyé" | "reçu";
 }
 
 function hdr(headers: { name: string; value: string }[], name: string) {
   return headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
+}
+
+function decodeBase64url(data: string): string {
+  try {
+    const base64 = data.replace(/-/g, "+").replace(/_/g, "/");
+    return Buffer.from(base64, "base64").toString("utf-8");
+  } catch { return ""; }
+}
+
+function extractBody(payload: Record<string, unknown>): string {
+  const body = payload.body as { data?: string } | undefined;
+  if (body?.data) return decodeBase64url(body.data);
+
+  const parts = payload.parts as Array<Record<string, unknown>> | undefined;
+  if (parts) {
+    // Prefer text/plain
+    for (const part of parts) {
+      if (part.mimeType === "text/plain") {
+        const pb = part.body as { data?: string } | undefined;
+        if (pb?.data) return decodeBase64url(pb.data);
+      }
+    }
+    // Recurse into nested multipart
+    for (const part of parts) {
+      const nested = extractBody(part);
+      if (nested) return nested;
+    }
+  }
+  return "";
 }
 
 function toDateStr(s: string): string {
@@ -120,17 +150,19 @@ export async function fetchMessages(
   const msgs: GmailMsg[] = await Promise.all(
     (list.messages as { id: string }[]).map(async ({ id }) => {
       const msg = await gFetch(
-        `/users/me/messages/${id}?format=metadata&metadataHeaders=Subject,Date,From,To`,
+        `/users/me/messages/${id}?format=full`,
         accessToken
       );
       const h: { name: string; value: string }[] = msg.payload?.headers ?? [];
       const from = hdr(h, "From");
+      const body = extractBody(msg.payload ?? {});
       return {
         id,
         date:      toDateStr(hdr(h, "Date")),
         subject:   hdr(h, "Subject"),
         from,
         snippet:   (msg.snippet as string) ?? "",
+        body:      body.slice(0, 4000), // cap to avoid huge payloads
         direction: from.toLowerCase().includes(prospectEmail.toLowerCase())
           ? ("reçu" as const)
           : ("envoyé" as const),

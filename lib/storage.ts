@@ -1,4 +1,4 @@
-import type { Prospect, KPIMonth, ProspectSteps, EmailRecord } from "./types";
+import type { Prospect, KPIMonth, ProspectSteps, EmailRecord, EnrichmentData } from "./types";
 import type { EmailVariant } from "./emailGenerator";
 import { withRelance } from "./utils";
 
@@ -25,6 +25,8 @@ function applyDefaults(raw: Record<string, unknown>): Prospect {
     secteur:             (raw.secteur as Prospect["secteur"]) ?? "Autre",
     contact:             (raw.contact as string)             ?? "",
     email:               (raw.email as string)               ?? "",
+    website:             (raw.website as string)             ?? "",
+    instagramHandle:     (raw.instagramHandle as string)     ?? "",
     gapCrm:              (raw.gapCrm as string)              ?? "",
     statut:              (raw.statut as Prospect["statut"])  ?? "À contacter",
     notes:               (raw.notes as string)               ?? "",
@@ -180,4 +182,22 @@ export function getColdEmails(prospectId: string): ColdEmailCache | null {
 
 export function saveColdEmails(prospectId: string, data: ColdEmailCache): void {
   localStorage.setItem(COLD_PREFIX + prospectId, JSON.stringify(data));
+}
+
+// ── Enrichment data (per prospect) ────────────────────────────────────────────
+
+const ENRICHMENT_PREFIX = "klaviopro_enrichment_";
+
+export function getEnrichment(prospectId: string): EnrichmentData | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(ENRICHMENT_PREFIX + prospectId);
+    return raw ? (JSON.parse(raw) as EnrichmentData) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveEnrichment(prospectId: string, data: EnrichmentData): void {
+  localStorage.setItem(ENRICHMENT_PREFIX + prospectId, JSON.stringify(data));
 }

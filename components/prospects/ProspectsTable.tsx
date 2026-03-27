@@ -27,6 +27,7 @@ import {
 import { useProspects } from "@/lib/hooks";
 import type { GmailMsg } from "@/lib/gmail";
 import ColdEmailTab from "@/components/prospects/ColdEmailTab";
+import EnrichmentPanel from "@/components/prospects/EnrichmentPanel";
 
 // ── Editable cell ─────────────────────────────────────────────────────────────
 
@@ -561,6 +562,15 @@ function InfosTab({
         <DField label="Gap CRM">
           <input key={p.id + "-g"} type="text" defaultValue={p.gapCrm} onBlur={(e) => onSave("gapCrm", e.target.value)} className={DI} placeholder="Réf." />
         </DField>
+        <DField label="Site web">
+          <input key={p.id + "-w"} type="text" defaultValue={p.website} onBlur={(e) => onSave("website", e.target.value)} className={DI} placeholder="ex: maison-dore.com" />
+        </DField>
+        <DField label="Instagram">
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm select-none">@</span>
+            <input key={p.id + "-ig"} type="text" defaultValue={p.instagramHandle} onBlur={(e) => onSave("instagramHandle", e.target.value.replace(/^@/, ""))} className={`${DI} pl-7`} placeholder="handle" />
+          </div>
+        </DField>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -606,6 +616,8 @@ function InfosTab({
         </label>
       </div>
 
+      <EnrichmentPanel prospect={p} />
+
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Séquence de relance</p>
         <div className="space-y-2">
@@ -639,6 +651,14 @@ function InfosTab({
 
 // ── EmailsTab (Gmail + localStorage) ─────────────────────────────────────────
 
+const MONTHS_FR = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+function formatDateLong(dateStr: string): string {
+  if (!dateStr) return "—";
+  const [y, m, d] = dateStr.split("-");
+  const mi = parseInt(m, 10) - 1;
+  return `${parseInt(d, 10)} ${MONTHS_FR[mi] ?? m} ${y}`;
+}
+
 interface GmailStatus { connected: boolean; email: string }
 
 function EmailsTab({
@@ -660,6 +680,7 @@ function EmailsTab({
   const [gmailLoading, setGmailLoading] = useState(false);
   const [sending, setSending]         = useState(false);
   const [sendError, setSendError]     = useState("");
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
 
   // Pre-fill compose when triggered from cold email tab
   useEffect(() => {
@@ -678,8 +699,7 @@ function EmailsTab({
       .catch(() => setGmailStatus({ connected: false, email: "" }));
   }, []);
 
-  // Fetch Gmail threads when connected + email set
-  useEffect(() => {
+  function fetchGmailThreads() {
     if (!gmailStatus?.connected || !prospect.email) return;
     setGmailLoading(true);
     fetch(`/api/gmail/threads?email=${encodeURIComponent(prospect.email)}`)
@@ -687,11 +707,15 @@ function EmailsTab({
       .then((d) => {
         const msgs: GmailMsg[] = d.messages ?? [];
         setGmailMsgs(msgs);
-        // Auto-flag "En conversation" if received emails found
         if (msgs.some((m) => m.direction === "reçu")) onReceivedDetected();
       })
       .catch(() => setGmailMsgs([]))
       .finally(() => setGmailLoading(false));
+  }
+
+  // Fetch Gmail threads when connected + email set
+  useEffect(() => {
+    fetchGmailThreads();
   }, [gmailStatus, prospect.email]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSend() {
@@ -747,25 +771,34 @@ function EmailsTab({
     setReceived({ date: today(), subject: "", body: "" });
   }
 
-  // Merge Gmail + localStorage, deduplicate by subject+date
-  const allEmails: Array<{ key: string; date: string; subject: string; snippet: string; direction: "envoyé" | "reçu"; source: "gmail" | "local" }> = [
-    ...gmailMsgs.map((m) => ({ key: "g_" + m.id, date: m.date, subject: m.subject, snippet: m.snippet, direction: m.direction, source: "gmail" as const })),
-    ...emails.map((e)   => ({ key: "l_" + e.id,  date: e.date, subject: e.subject, snippet: e.body,    direction: e.direction, source: "local" as const })),
+  // Merge Gmail + localStorage
+  const allEmails: Array<{ key: string; date: string; subject: string; snippet: string; body: string; direction: "envoyé" | "reçu"; source: "gmail" | "local" }> = [
+    ...gmailMsgs.map((m) => ({ key: "g_" + m.id, date: m.date, subject: m.subject, snippet: m.snippet, body: m.body, direction: m.direction, source: "gmail" as const })),
+    ...emails.map((e)   => ({ key: "l_" + e.id,  date: e.date, subject: e.subject, snippet: e.body,    body: e.body, direction: e.direction, source: "local" as const })),
   ].sort((a, b) => b.date.localeCompare(a.date));
 
   return (
     <div className="p-5 space-y-4">
       {/* Gmail status banner */}
       {gmailStatus && !gmailStatus.connected && (
-        <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-          <p className="text-xs text-slate-500">Gmail non connecté — envoi via messagerie externe.</p>
-          <a href="/settings" className="text-xs text-blue-600 hover:underline shrink-0 ml-3">Connecter →</a>
+        <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5">
+          <p className="text-xs text-slate-500">Gmail non connecté — les échanges réels ne sont pas visibles.</p>
+          <a href="/settings" className="text-xs font-medium text-blue-600 hover:underline shrink-0 ml-3">Connecter Gmail →</a>
         </div>
       )}
       {gmailStatus?.connected && (
-        <div className="flex items-center gap-1.5 text-xs text-green-700">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-          Gmail connecté · {gmailStatus.email}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs text-green-700">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+            Gmail connecté · {gmailStatus.email}
+          </div>
+          <button
+            onClick={fetchGmailThreads}
+            disabled={gmailLoading}
+            className="text-xs text-slate-500 hover:text-slate-700 disabled:opacity-50 px-2 py-1 rounded hover:bg-slate-100 transition-colors"
+          >
+            {gmailLoading ? "…" : "Rafraîchir"}
+          </button>
         </div>
       )}
 
@@ -824,45 +857,80 @@ function EmailsTab({
       )}
 
       {/* Email list */}
-      {gmailLoading && <p className="text-sm text-slate-400 text-center py-4">Chargement des emails Gmail…</p>}
+      {gmailLoading && (
+        <p className="text-sm text-slate-400 text-center py-6">Chargement des échanges Gmail…</p>
+      )}
 
-      {!gmailLoading && allEmails.length === 0 && (
+      {!gmailLoading && gmailStatus?.connected && !prospect.email && (
+        <p className="text-xs text-slate-400 text-center py-4">Renseignez l&apos;email du prospect pour voir ses échanges.</p>
+      )}
+
+      {!gmailLoading && gmailStatus?.connected && prospect.email && allEmails.filter(e => e.source === "gmail").length === 0 && gmailMsgs !== undefined && (
+        <p className="text-sm text-slate-400 text-center py-4">Aucun échange Gmail trouvé avec ce contact.</p>
+      )}
+
+      {!gmailLoading && allEmails.length === 0 && !gmailStatus?.connected && (
         <p className="text-sm text-slate-400 text-center py-8">Aucun email enregistré.</p>
       )}
 
       {!gmailLoading && allEmails.length > 0 && (
         <div className="space-y-2">
-          {allEmails.map((email) => (
-            <div
-              key={email.key}
-              className={`rounded-xl border p-3 ${
-                email.direction === "envoyé" ? "border-blue-100 bg-blue-50" : "border-green-100 bg-green-50"
-              }`}
-            >
-              <div className="flex items-start gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
-                      email.direction === "envoyé" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"
-                    }`}>
-                      {email.direction === "envoyé" ? "↗ Envoyé" : "↙ Reçu"}
-                    </span>
-                    <span className="text-xs text-slate-400">{formatDateFR(email.date)}</span>
-                    {email.source === "gmail" && <span className="text-xs text-slate-400">· Gmail</span>}
+          {allEmails.map((email) => {
+            const isExpanded = expandedKeys.has(email.key);
+            const hasBody = email.body && email.body.trim().length > 0;
+            return (
+              <div
+                key={email.key}
+                className={`rounded-xl border ${
+                  email.direction === "envoyé" ? "border-blue-100 bg-blue-50" : "border-green-100 bg-green-50"
+                }`}
+              >
+                <div className="p-3">
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                          email.direction === "envoyé" ? "bg-blue-200 text-blue-800" : "bg-green-200 text-green-800"
+                        }`}>
+                          {email.direction === "envoyé" ? "Envoyé →" : "← Reçu"}
+                        </span>
+                        <span className="text-xs text-slate-500">{formatDateLong(email.date)}</span>
+                        {email.source === "gmail" && <span className="text-xs text-slate-400">· Gmail</span>}
+                      </div>
+                      {email.subject && (
+                        <p className="text-sm font-semibold text-slate-800 mb-1">{email.subject}</p>
+                      )}
+                      {!isExpanded && email.snippet && (
+                        <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{email.snippet}</p>
+                      )}
+                      {isExpanded && hasBody && (
+                        <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed mt-1 max-h-64 overflow-y-auto">{email.body}</pre>
+                      )}
+                    </div>
+                    {email.source === "local" && (
+                      <button
+                        onClick={() => { deleteEmailRecord(prospect.id, email.key.slice(2)); onRefresh(); }}
+                        className="text-slate-300 hover:text-red-400 text-lg leading-none shrink-0"
+                        title="Supprimer"
+                      >×</button>
+                    )}
                   </div>
-                  {email.subject && <p className="text-sm font-medium text-slate-800 truncate">{email.subject}</p>}
-                  {email.snippet && <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{email.snippet}</p>}
+                  {hasBody && (
+                    <button
+                      onClick={() => setExpandedKeys((prev) => {
+                        const n = new Set(prev);
+                        n.has(email.key) ? n.delete(email.key) : n.add(email.key);
+                        return n;
+                      })}
+                      className="mt-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                    >
+                      {isExpanded ? "▲ Réduire" : "▼ Voir le message complet"}
+                    </button>
+                  )}
                 </div>
-                {email.source === "local" && (
-                  <button
-                    onClick={() => { deleteEmailRecord(prospect.id, email.key.slice(2)); onRefresh(); }}
-                    className="text-slate-300 hover:text-red-400 text-lg leading-none shrink-0"
-                    title="Supprimer"
-                  >×</button>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -942,7 +1010,8 @@ export default function ProspectsTable() {
 
   function handleAdd() {
     const np = addOne({
-      marque: "", secteur: "Autre", contact: "", email: "", gapCrm: "",
+      marque: "", secteur: "Autre", contact: "", email: "",
+      website: "", instagramHandle: "", gapCrm: "",
       statut: "À contacter", notes: "", steps: emptySteps(),
       ouverturesMultiples: false, enConversation: false,
       dernierContact: null, relanceFaite: false,
@@ -972,7 +1041,9 @@ export default function ProspectsTable() {
           secteur:    SECTEURS.includes(rawSecteur) ? rawSecteur : "Autre",
           contact:    row["Contact"] || "",
           email:      row["Email"]   || "",
-          gapCrm:     row["Gap CRM"] || "",
+          gapCrm:          row["Gap CRM"] || "",
+          website:         row["Website"] || "",
+          instagramHandle: row["Instagram"] || "",
           statut:     STATUTS.includes(rawStatut) ? rawStatut : "À contacter",
           notes:      row["Notes"] || "",
           steps:      emptySteps(),
