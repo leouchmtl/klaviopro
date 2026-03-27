@@ -1,4 +1,5 @@
 import type { Prospect, KPIMonth, ProspectSteps, EmailRecord } from "./types";
+import type { EmailVariant } from "./emailGenerator";
 import { withRelance } from "./utils";
 
 const PROSPECTS_KEY = "klaviopro_prospects";
@@ -154,4 +155,29 @@ export function saveEmailRecord(prospectId: string, record: EmailRecord): void {
 export function deleteEmailRecord(prospectId: string, emailId: string): void {
   const filtered = getEmails(prospectId).filter((e) => e.id !== emailId);
   localStorage.setItem(EMAILS_PREFIX + prospectId, JSON.stringify(filtered));
+}
+
+// ── Cold email variants (per prospect) ────────────────────────────────────────
+
+export interface ColdEmailCache {
+  brand: string;
+  contact: string;
+  gap: string;
+  variants: EmailVariant[];
+}
+
+const COLD_PREFIX = "klaviopro_cold_";
+
+export function getColdEmails(prospectId: string): ColdEmailCache | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(COLD_PREFIX + prospectId);
+    return raw ? (JSON.parse(raw) as ColdEmailCache) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveColdEmails(prospectId: string, data: ColdEmailCache): void {
+  localStorage.setItem(COLD_PREFIX + prospectId, JSON.stringify(data));
 }

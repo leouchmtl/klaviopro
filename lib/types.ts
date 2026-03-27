@@ -1,5 +1,6 @@
 export const STATUTS = [
   "À contacter",
+  "Contacté J0",
   "Relance J+5",
   "Relance J+12",
   "Relance J+21",

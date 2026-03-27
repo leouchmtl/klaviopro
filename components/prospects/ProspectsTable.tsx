@@ -26,6 +26,7 @@ import {
 } from "@/lib/utils";
 import { useProspects } from "@/lib/hooks";
 import type { GmailMsg } from "@/lib/gmail";
+import ColdEmailTab from "@/components/prospects/ColdEmailTab";
 
 // ── Editable cell ─────────────────────────────────────────────────────────────
 
@@ -444,9 +445,15 @@ function BulkBar({
 // ── Prospect Drawer ───────────────────────────────────────────────────────────
 
 function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClose: () => void }) {
-  const [tab, setTab]     = useState<"infos" | "emails">("infos");
+  const [tab, setTab]     = useState<"infos" | "emails" | "cold">("infos");
   const [p, setP]         = useState<Prospect>(init);
   const [emails, setEmails] = useState<EmailRecord[]>([]);
+  const [coldCompose, setColdCompose] = useState<{ subject: string; body: string } | null>(null);
+
+  function handleSendViaGmail(subject: string, body: string) {
+    setColdCompose({ subject, body });
+    setTab("emails");
+  }
 
   useEffect(() => {
     setEmails(getEmails(p.id));
@@ -497,15 +504,15 @@ function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClo
         </div>
 
         <div className="flex border-b border-slate-200 shrink-0">
-          {(["infos", "emails"] as const).map((t) => (
+          {(["infos", "emails", "cold"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-5 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              className={`px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-700"
               }`}
             >
-              {t === "infos" ? "Infos" : `Emails (${emails.length})`}
+              {t === "infos" ? "Infos" : t === "emails" ? `Emails (${emails.length})` : "Emails froids"}
             </button>
           ))}
         </div>
@@ -513,7 +520,9 @@ function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClo
         <div className="flex-1 overflow-y-auto">
           {tab === "infos"
             ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} />
-            : <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} />}
+            : tab === "emails"
+            ? <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} initialCompose={coldCompose} onConsumeCompose={() => setColdCompose(null)} />
+            : <ColdEmailTab prospect={p} onSendViaGmail={handleSendViaGmail} />}
         </div>
       </div>
     </>
@@ -633,13 +642,15 @@ function InfosTab({
 interface GmailStatus { connected: boolean; email: string }
 
 function EmailsTab({
-  prospect, emails, onRefresh, onAfterSend, onReceivedDetected,
+  prospect, emails, onRefresh, onAfterSend, onReceivedDetected, initialCompose, onConsumeCompose,
 }: {
   prospect: Prospect;
   emails: EmailRecord[];
   onRefresh: () => void;
   onAfterSend: () => void;
   onReceivedDetected: () => void;
+  initialCompose?: { subject: string; body: string } | null;
+  onConsumeCompose?: () => void;
 }) {
   const [mode, setMode]               = useState<"idle" | "compose" | "received">("idle");
   const [compose, setCompose]         = useState({ subject: "", body: "" });
@@ -649,6 +660,15 @@ function EmailsTab({
   const [gmailLoading, setGmailLoading] = useState(false);
   const [sending, setSending]         = useState(false);
   const [sendError, setSendError]     = useState("");
+
+  // Pre-fill compose when triggered from cold email tab
+  useEffect(() => {
+    if (initialCompose) {
+      setCompose({ subject: initialCompose.subject, body: initialCompose.body });
+      setMode("compose");
+      onConsumeCompose?.();
+    }
+  }, [initialCompose]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check Gmail connection
   useEffect(() => {

@@ -2,7 +2,8 @@ import type { Statut, Prospect, ProspectSteps, StepEntry } from "./types";
 
 // Days to add from dernierContact (or today) per statut (null = no follow-up)
 const STATUT_DELAY: Record<Statut, number | null> = {
-  "À contacter": 5,
+  "À contacter":  5,
+  "Contacté J0":  5,
   "Relance J+5":  7,
   "Relance J+12": 9,
   "Relance J+21": 14,
@@ -73,7 +74,7 @@ export const STEP_ORDER = ["j0", "j5", "j12", "j21", "j35", "j60"] as const;
 type StepKey = (typeof STEP_ORDER)[number];
 
 export const STEP_TO_STATUT: Record<StepKey, Statut> = {
-  j0:  "À contacter",
+  j0:  "Contacté J0",
   j5:  "Relance J+5",
   j12: "Relance J+12",
   j21: "Relance J+21",
@@ -195,6 +196,7 @@ function splitCSVLine(line: string): string[] {
 
 export const STATUT_COLORS: Record<Statut, { bg: string; text: string }> = {
   "À contacter":  { bg: "bg-blue-100",   text: "text-blue-800"   },
+  "Contacté J0":  { bg: "bg-teal-100",   text: "text-teal-800"   },
   "Relance J+5":  { bg: "bg-yellow-100", text: "text-yellow-800" },
   "Relance J+12": { bg: "bg-orange-100", text: "text-orange-800" },
   "Relance J+21": { bg: "bg-amber-100",  text: "text-amber-800"  },
