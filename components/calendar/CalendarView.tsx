@@ -2,34 +2,49 @@
 
 import { useEffect, useState } from "react";
 import type { Prospect } from "@/lib/types";
-import { getProspects } from "@/lib/storage";
+import { getProspects, updateProspect } from "@/lib/storage";
 import {
   today,
   startOfWeek,
   endOfWeek,
   formatDateFR,
   isLate,
+  isToday,
   STATUT_COLORS,
   toDateStr,
 } from "@/lib/utils";
 
 type View = "list" | "calendar";
 
+// Color helpers based on done/late/today
+function itemColor(done: boolean, prochaineRelance: string | null) {
+  if (done) return { row: "bg-green-50", text: "text-green-700", dot: "bg-green-400" };
+  if (isLate(prochaineRelance)) return { row: "bg-red-50", text: "text-red-600", dot: "bg-red-400" };
+  if (isToday(prochaineRelance)) return { row: "bg-orange-50", text: "text-orange-600", dot: "bg-orange-400" };
+  return { row: "", text: "text-slate-700", dot: "bg-blue-400" };
+}
+
 export default function CalendarView() {
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [view, setView] = useState<View>("list");
   const [currentMonth, setCurrentMonth] = useState(() => {
     const d = new Date();
-    return { year: d.getFullYear(), month: d.getMonth() }; // 0-indexed
+    return { year: d.getFullYear(), month: d.getMonth() };
   });
 
-  useEffect(() => {
+  function load() {
     setProspects(getProspects());
-  }, []);
+  }
 
-  // Only prospects with a follow-up date
+  useEffect(() => { load(); }, []);
+
+  function toggleDone(p: Prospect) {
+    const updated = { ...p, relanceFaite: !p.relanceFaite };
+    updateProspect(updated);
+    setProspects((prev) => prev.map((x) => (x.id === p.id ? { ...x, relanceFaite: !x.relanceFaite } : x)));
+  }
+
   const withRelance = prospects.filter((p) => !!p.prochaineRelance);
-
   const todayStr = today();
   const weekStart = startOfWeek();
   const weekEnd = endOfWeek();
@@ -44,7 +59,6 @@ export default function CalendarView() {
 
   return (
     <div>
-      {/* View toggle */}
       <div className="flex gap-2 mb-6">
         {(["list", "calendar"] as View[]).map((v) => (
           <button
@@ -62,12 +76,13 @@ export default function CalendarView() {
       </div>
 
       {view === "list" ? (
-        <ListView dueToday={dueToday} dueThisWeek={dueThisWeek} />
+        <ListView dueToday={dueToday} dueThisWeek={dueThisWeek} onToggle={toggleDone} />
       ) : (
         <MonthCalendar
           prospects={withRelance}
           currentMonth={currentMonth}
           setCurrentMonth={setCurrentMonth}
+          onToggle={toggleDone}
         />
       )}
     </div>
@@ -79,23 +94,25 @@ export default function CalendarView() {
 function ListView({
   dueToday,
   dueThisWeek,
+  onToggle,
 }: {
   dueToday: Prospect[];
   dueThisWeek: Prospect[];
+  onToggle: (p: Prospect) => void;
 }) {
   return (
     <div className="space-y-8">
       <Section
         title="⚠ À contacter aujourd'hui (ou en retard)"
         prospects={dueToday}
-        emptyMsg="Aucune relance en retard ou à faire aujourd'hui."
-        highlight
+        emptyMsg="Aucune relance en retard ou à faire aujourd'hui. ✓"
+        onToggle={onToggle}
       />
       <Section
         title="📅 Cette semaine (à venir)"
         prospects={dueThisWeek}
         emptyMsg="Aucune relance prévue cette semaine."
-        highlight={false}
+        onToggle={onToggle}
       />
     </div>
   );
@@ -105,12 +122,12 @@ function Section({
   title,
   prospects,
   emptyMsg,
-  highlight,
+  onToggle,
 }: {
   title: string;
   prospects: Prospect[];
   emptyMsg: string;
-  highlight: boolean;
+  onToggle: (p: Prospect) => void;
 }) {
   return (
     <div>
@@ -122,29 +139,31 @@ function Section({
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                {["Marque", "Contact", "Email", "Statut", "Relance prévue", "Notes"].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide"
-                    >
-                      {h}
-                    </th>
-                  )
-                )}
+                {["", "Marque", "Contact", "Email", "Statut", "Relance prévue", "Notes"].map((h, i) => (
+                  <th
+                    key={i}
+                    className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide"
+                  >
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {prospects.map((p) => {
-                const late = isLate(p.prochaineRelance);
+                const { row, text } = itemColor(p.relanceFaite, p.prochaineRelance);
                 return (
-                  <tr
-                    key={p.id}
-                    className={`border-b border-slate-100 last:border-0 ${
-                      late && highlight ? "bg-red-50" : "hover:bg-slate-50"
-                    }`}
-                  >
-                    <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">
+                  <tr key={p.id} className={`border-b border-slate-100 last:border-0 transition-colors ${row}`}>
+                    {/* Checkbox */}
+                    <td className="px-4 py-3 w-8">
+                      <input
+                        type="checkbox"
+                        checked={p.relanceFaite}
+                        onChange={() => onToggle(p)}
+                        className="w-4 h-4 accent-green-500 cursor-pointer"
+                      />
+                    </td>
+                    <td className={`px-4 py-3 font-medium whitespace-nowrap ${p.relanceFaite ? "line-through text-slate-400" : "text-slate-900"}`}>
                       {p.marque}
                     </td>
                     <td className="px-4 py-3 text-slate-700 whitespace-nowrap">
@@ -160,8 +179,8 @@ function Section({
                     <td className="px-4 py-3 whitespace-nowrap">
                       <StatutBadge statut={p.statut} />
                     </td>
-                    <td className={`px-4 py-3 font-medium whitespace-nowrap ${late ? "text-red-600" : "text-slate-700"}`}>
-                      {late ? "⚠ " : ""}{formatDateFR(p.prochaineRelance)}
+                    <td className={`px-4 py-3 font-medium whitespace-nowrap ${text}`}>
+                      {formatDateFR(p.prochaineRelance)}
                     </td>
                     <td className="px-4 py-3 text-slate-500 max-w-xs truncate">
                       {p.notes || "—"}
@@ -183,12 +202,15 @@ function MonthCalendar({
   prospects,
   currentMonth,
   setCurrentMonth,
+  onToggle,
 }: {
   prospects: Prospect[];
   currentMonth: { year: number; month: number };
   setCurrentMonth: (m: { year: number; month: number }) => void;
+  onToggle: (p: Prospect) => void;
 }) {
   const { year, month } = currentMonth;
+  const todayStr = today();
 
   const monthLabel = new Date(year, month, 1).toLocaleDateString("fr-FR", {
     month: "long",
@@ -204,24 +226,20 @@ function MonthCalendar({
     setCurrentMonth({ year: d.getFullYear(), month: d.getMonth() });
   }
 
-  // Build grid
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
-  // Monday-first: 0=Mon … 6=Sun
   const startPad = (firstDay.getDay() + 6) % 7;
   const totalCells = Math.ceil((startPad + lastDay.getDate()) / 7) * 7;
 
   const cells: (Date | null)[] = [];
   for (let i = 0; i < totalCells; i++) {
     const dayNum = i - startPad + 1;
-    if (dayNum < 1 || dayNum > lastDay.getDate()) {
-      cells.push(null);
-    } else {
-      cells.push(new Date(year, month, dayNum));
-    }
+    cells.push(
+      dayNum < 1 || dayNum > lastDay.getDate()
+        ? null
+        : new Date(year, month, dayNum)
+    );
   }
-
-  const todayStr = today();
 
   // Map date → prospects
   const byDate: Record<string, Prospect[]> = {};
@@ -235,88 +253,71 @@ function MonthCalendar({
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-      {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
-        <button
-          onClick={prev}
-          className="p-2 rounded-lg hover:bg-slate-100 text-slate-600"
-        >
-          ‹
-        </button>
+        <button onClick={prev} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 text-lg">‹</button>
         <h2 className="font-semibold text-slate-900 capitalize">{monthLabel}</h2>
-        <button
-          onClick={next}
-          className="p-2 rounded-lg hover:bg-slate-100 text-slate-600"
-        >
-          ›
-        </button>
+        <button onClick={next} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 text-lg">›</button>
       </div>
 
-      {/* Day labels */}
       <div className="grid grid-cols-7 border-b border-slate-100">
         {DAYS.map((d) => (
-          <div
-            key={d}
-            className="py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide"
-          >
+          <div key={d} className="py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">
             {d}
           </div>
         ))}
       </div>
 
-      {/* Cells */}
       <div className="grid grid-cols-7">
         {cells.map((date, i) => {
           if (!date) {
-            return (
-              <div key={i} className="min-h-[90px] bg-slate-50 border-b border-r border-slate-100" />
-            );
+            return <div key={i} className="min-h-[100px] bg-slate-50 border-b border-r border-slate-100" />;
           }
 
           const dateStr = toDateStr(date);
-          const isToday = dateStr === todayStr;
+          const isTodayCell = dateStr === todayStr;
           const dayProspects = byDate[dateStr] ?? [];
 
           return (
             <div
               key={i}
-              className={`min-h-[90px] p-1.5 border-b border-r border-slate-100 ${
-                isToday ? "bg-blue-50" : ""
-              }`}
+              className={`min-h-[100px] p-1.5 border-b border-r border-slate-100 ${isTodayCell ? "bg-blue-50" : ""}`}
             >
-              {/* Day number */}
-              <div
-                className={`text-xs font-semibold mb-1 w-6 h-6 flex items-center justify-center rounded-full ${
-                  isToday
-                    ? "bg-blue-600 text-white"
-                    : "text-slate-400"
-                }`}
-              >
+              <div className={`text-xs font-semibold mb-1 w-6 h-6 flex items-center justify-center rounded-full ${
+                isTodayCell ? "bg-blue-600 text-white" : "text-slate-400"
+              }`}>
                 {date.getDate()}
               </div>
 
-              {/* Prospect pills */}
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 {dayProspects.slice(0, 3).map((p) => {
-                  const late = p.prochaineRelance! < todayStr;
+                  const { dot } = itemColor(p.relanceFaite, p.prochaineRelance);
                   return (
-                    <div
+                    <label
                       key={p.id}
-                      title={`${p.marque} — ${p.statut}${p.notes ? "\n" + p.notes : ""}`}
-                      className={`truncate text-xs px-1.5 py-0.5 rounded cursor-default ${
-                        late
+                      className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded cursor-pointer ${
+                        p.relanceFaite
+                          ? "bg-green-100 text-green-700"
+                          : isLate(p.prochaineRelance)
                           ? "bg-red-100 text-red-700"
+                          : isToday(p.prochaineRelance)
+                          ? "bg-orange-100 text-orange-700"
                           : "bg-blue-100 text-blue-700"
                       }`}
+                      title={`${p.marque} — ${p.statut}`}
                     >
-                      {p.marque}
-                    </div>
+                      <input
+                        type="checkbox"
+                        checked={p.relanceFaite}
+                        onChange={() => onToggle(p)}
+                        className="w-3 h-3 flex-shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <span className="truncate">{p.marque}</span>
+                    </label>
                   );
                 })}
                 {dayProspects.length > 3 && (
-                  <div className="text-xs text-slate-400 px-1">
-                    +{dayProspects.length - 3}
-                  </div>
+                  <div className="text-xs text-slate-400 px-1">+{dayProspects.length - 3}</div>
                 )}
               </div>
             </div>
@@ -324,16 +325,17 @@ function MonthCalendar({
         })}
       </div>
 
-      {/* Legend */}
-      <div className="flex items-center gap-4 px-6 py-3 border-t border-slate-100 text-xs text-slate-500">
-        <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded bg-blue-100 inline-block" />
-          Relance à venir
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded bg-red-100 inline-block" />
-          En retard
-        </span>
+      <div className="flex items-center gap-5 px-6 py-3 border-t border-slate-100 text-xs text-slate-500">
+        {[
+          { color: "bg-green-100 text-green-700", label: "Fait ✓" },
+          { color: "bg-orange-100 text-orange-700", label: "Aujourd'hui" },
+          { color: "bg-red-100 text-red-700", label: "En retard" },
+          { color: "bg-blue-100 text-blue-700", label: "À venir" },
+        ].map(({ color, label }) => (
+          <span key={label} className={`flex items-center gap-1.5 px-2 py-0.5 rounded ${color}`}>
+            {label}
+          </span>
+        ))}
       </div>
     </div>
   );

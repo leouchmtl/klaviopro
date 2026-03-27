@@ -1,4 +1,4 @@
-import type { Statut, Prospect } from "./types";
+import type { Statut, Prospect, ProspectSteps } from "./types";
 
 // Days to add per statut (null = no follow-up needed)
 const STATUT_DELAY: Record<Statut, number | null> = {
@@ -19,15 +19,12 @@ export function calcProchaineRelance(
 ): string | null {
   const delay = STATUT_DELAY[statut];
   if (delay === null) return null;
-
   const base = dernierContact ? new Date(dernierContact) : new Date();
-  // "À contacter" with no last contact → today
   if (delay === 0) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return toDateStr(today);
+    const t = new Date();
+    t.setHours(0, 0, 0, 0);
+    return toDateStr(t);
   }
-
   const result = new Date(base);
   result.setDate(result.getDate() + delay);
   return toDateStr(result);
@@ -65,8 +62,8 @@ export function isToday(dateStr: string | null): boolean {
 
 export function startOfWeek(): string {
   const d = new Date();
-  const day = d.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day; // Monday
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
   d.setDate(d.getDate() + diff);
   return toDateStr(d);
 }
@@ -74,6 +71,53 @@ export function startOfWeek(): string {
 export function endOfWeek(): string {
   return addDays(startOfWeek(), 6);
 }
+
+// ── Dynamic "Prochaine relance" from step checkboxes ─────────────────────────
+
+const STEP_ORDER = ["j0", "j5", "j12", "j21", "j35", "j60"] as const;
+type StepKey = (typeof STEP_ORDER)[number];
+
+// Days to add from each step's date to get the NEXT expected relance
+const STEP_GAPS: Record<StepKey, number | null> = {
+  j0: 5, j5: 7, j12: 9, j21: 14, j35: 25, j60: null,
+};
+
+/**
+ * Returns:
+ *   null            — all steps done (✅ Terminé)
+ *   string (date)   — date of the next expected relance
+ */
+export function calcNextRelanceFromSteps(steps: ProspectSteps): string | null {
+  let lastDoneIdx = -1;
+  for (let i = 0; i < STEP_ORDER.length; i++) {
+    if (steps[STEP_ORDER[i]].done) lastDoneIdx = i;
+  }
+
+  // j60 done → all done
+  if (lastDoneIdx === STEP_ORDER.length - 1) return null;
+
+  // Some step done → next = lastDone.date + gap
+  if (lastDoneIdx >= 0) {
+    const key = STEP_ORDER[lastDoneIdx];
+    const gap = STEP_GAPS[key]!;
+    const base = steps[key].date ?? today();
+    return addDays(base, gap);
+  }
+
+  // No step done → use j0 date if set, else today
+  return steps.j0.date ?? today();
+}
+
+// CSS color for a dynamic relance date
+export function relanceDateColor(date: string | null): string {
+  if (!date) return "text-slate-400";
+  const t = today();
+  if (date < t) return "text-red-600";
+  if (date === t) return "text-orange-500";
+  return "text-slate-400";
+}
+
+// ── Misc ─────────────────────────────────────────────────────────────────────
 
 // CSV → array of objects
 export function parseCSV(text: string): Record<string, string>[] {
@@ -121,7 +165,6 @@ export const STATUT_COLORS: Record<Statut, { bg: string; text: string }> = {
   "Sans besoin":  { bg: "bg-gray-100",   text: "text-gray-600"   },
 };
 
-// Recompute prochaineRelance on a prospect
 export function withRelance(p: Prospect): Prospect {
   return {
     ...p,

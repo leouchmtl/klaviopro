@@ -12,22 +12,52 @@ export const STATUTS = [
 
 export type Statut = (typeof STATUTS)[number];
 
+export const SECTEURS = [
+  "Mode",
+  "Lingerie",
+  "Cosmétiques",
+  "Bijoux",
+  "Lifestyle",
+  "Enfant",
+  "Autre",
+] as const;
+
+export type Secteur = (typeof SECTEURS)[number];
+
+export interface StepEntry {
+  done: boolean;
+  date: string | null; // "YYYY-MM-DD"
+}
+
+export interface ProspectSteps {
+  j0:  StepEntry;
+  j5:  StepEntry;
+  j12: StepEntry;
+  j21: StepEntry;
+  j35: StepEntry;
+  j60: StepEntry;
+}
+
 export interface Prospect {
   id: string;
   marque: string;
+  secteur: Secteur;
   contact: string;
   email: string;
   gapCrm: string;
   statut: Statut;
   notes: string;
-  dernierContact: string | null; // "YYYY-MM-DD"
-  prochaineRelance: string | null; // "YYYY-MM-DD" — auto-calculated
+  steps: ProspectSteps;
+  ouverturesMultiples: boolean; // opened your email multiple times
+  enConversation: boolean;      // active exchange ongoing
+  dernierContact: string | null;
+  prochaineRelance: string | null; // auto-calculated
+  relanceFaite: boolean;
   createdAt: string;
 }
 
 export interface KPIMonth {
-  mois: string; // "YYYY-MM"
-  emailsEnvoyes: number;
-  tauxOuverture: number; // 0–100
-  tauxReponse: number;   // 0–100
+  mois: string;
+  tauxOuverture: number;
+  tauxReponse: number;
 }
