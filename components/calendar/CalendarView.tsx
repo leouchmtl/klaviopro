@@ -351,9 +351,9 @@ function MonthCalendar({
 }
 
 function StatutBadge({ statut }: { statut: Prospect["statut"] }) {
-  const { bg, text } = STATUT_COLORS[statut];
+  const { solidBg } = STATUT_COLORS[statut];
   return (
-    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${bg} ${text}`}>
+    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium text-white ${solidBg}`}>
       {statut}
     </span>
   );

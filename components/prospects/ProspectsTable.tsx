@@ -3,7 +3,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord, EnrichmentData, FoundersSource, FoundersConfidence } from "@/lib/types";
+import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord, EnrichmentData, FoundersSource, FoundersConfidence, RevenueSource } from "@/lib/types";
 import { STATUTS, SECTEURS } from "@/lib/types";
 import {
   updateProspect,
@@ -15,6 +15,8 @@ import {
   deleteEmailRecord,
   saveEnrichment,
   getAllEnrichments,
+  getCaThreshold,
+  saveCaThreshold,
 } from "@/lib/storage";
 import {
   formatDateFR,
@@ -32,6 +34,115 @@ import type { GmailMsg, MatchType } from "@/lib/gmail";
 import ColdEmailTab from "@/components/prospects/ColdEmailTab";
 import EnrichmentPanel from "@/components/prospects/EnrichmentPanel";
 import ContactFinderPanel from "@/components/prospects/ContactFinderPanel";
+
+// ── Column system ─────────────────────────────────────────────────────────────
+
+export type ColId =
+  | "contact" | "email" | "shopify" | "klaviyo" | "instagram"
+  | "gapCrm" | "statut" | "relances" | "dernierContact" | "prochaineRelance"
+  | "secteur" | "notes" | "chaud" | "ouvertures" | "conversation" | "ca";
+
+interface ColDef { id: ColId; label: string; defaultVisible: boolean }
+
+export const ALL_COLS: ColDef[] = [
+  { id: "contact",          label: "Contact",             defaultVisible: true  },
+  { id: "email",            label: "Email",               defaultVisible: true  },
+  { id: "shopify",          label: "🛍 Shopify",          defaultVisible: true  },
+  { id: "klaviyo",          label: "⚡ Klaviyo",          defaultVisible: true  },
+  { id: "instagram",        label: "Instagram",           defaultVisible: true  },
+  { id: "gapCrm",           label: "Gap CRM",             defaultVisible: true  },
+  { id: "statut",           label: "Statut",              defaultVisible: true  },
+  { id: "relances",         label: "Relances",            defaultVisible: true  },
+  { id: "dernierContact",   label: "Dernier contact",     defaultVisible: true  },
+  { id: "prochaineRelance", label: "Prochaine relance",   defaultVisible: true  },
+  { id: "ca",               label: "CA",                  defaultVisible: true  },
+  { id: "secteur",          label: "Secteur",             defaultVisible: false },
+  { id: "notes",            label: "Notes",               defaultVisible: false },
+  { id: "chaud",            label: "🔥 Chaud",            defaultVisible: false },
+  { id: "ouvertures",       label: "Ouvertures multiples",defaultVisible: false },
+  { id: "conversation",     label: "En conversation",     defaultVisible: false },
+];
+
+const COL_PREFS_KEY = "klaviopro_col_prefs";
+
+function loadColPrefs(): { order: ColId[]; visible: ColId[] } {
+  try {
+    const raw = localStorage.getItem(COL_PREFS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {
+    order:   ALL_COLS.map((c) => c.id),
+    visible: ALL_COLS.filter((c) => c.defaultVisible).map((c) => c.id),
+  };
+}
+
+function saveColPrefs(order: ColId[], visible: ColId[]) {
+  try { localStorage.setItem(COL_PREFS_KEY, JSON.stringify({ order, visible })); } catch {}
+}
+
+// ── Sort ──────────────────────────────────────────────────────────────────────
+
+type SortCol = "marque" | "ca" | ColId;
+type SortDir = "asc" | "desc";
+
+const STATUT_ORDER: Record<string, number> = Object.fromEntries(
+  ["À contacter","Contacté J0","Relance J+5","Relance J+12","Relance J+21","Relance J+35","Relance J+60","Client","Refus","Sans besoin"].map((s, i) => [s, i])
+);
+
+function extractFollowers(ig: string | undefined): number {
+  if (!ig) return -1;
+  const m = ig.match(/([\d.,]+)\s*([KkMm]?)\s*abonnés/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1].replace(/,/g, "."));
+  const unit = m[2].toLowerCase();
+  if (unit === "k") return n * 1000;
+  if (unit === "m") return n * 1_000_000;
+  return n;
+}
+
+function sortProspects(
+  list: Prospect[],
+  col: SortCol | null,
+  dir: SortDir,
+  enrichments: Record<string, EnrichmentData>
+): Prospect[] {
+  if (!col) return list;
+  return [...list].sort((a, b) => {
+    let cmp = 0;
+    if (col === "marque") cmp = a.marque.localeCompare(b.marque, "fr");
+    else if (col === "statut") cmp = (STATUT_ORDER[a.statut] ?? 99) - (STATUT_ORDER[b.statut] ?? 99);
+    else if (col === "dernierContact") cmp = (a.dernierContact ?? "").localeCompare(b.dernierContact ?? "");
+    else if (col === "prochaineRelance") cmp = (a.prochaineRelance ?? "9999").localeCompare(b.prochaineRelance ?? "9999");
+    else if (col === "instagram") {
+      cmp = extractFollowers(enrichments[a.id]?.instagram) - extractFollowers(enrichments[b.id]?.instagram);
+    } else if (col === "relances") {
+      const doneA = STEP_ORDER.filter((k) => a.steps[k].done).length;
+      const doneB = STEP_ORDER.filter((k) => b.steps[k].done).length;
+      cmp = doneA - doneB;
+    } else if (col === "ca") {
+      cmp = (a.annualRevenue ?? -1) - (b.annualRevenue ?? -1);
+    }
+    return dir === "asc" ? cmp : -cmp;
+  });
+}
+
+// ── CA formatting helpers ─────────────────────────────────────────────────────
+
+function formatCAValue(amount: number | null, raw: string, source: string, isEstimated: boolean): string {
+  if (!amount && !raw) return "—";
+  if (isEstimated) {
+    // raw already contains the estimate range string e.g. "150K€ - 500K€ estimé"
+    return raw || "estimé";
+  }
+  if (amount! >= 1_000_000) {
+    const m = (amount! / 1_000_000).toFixed(1).replace(".", ",");
+    return `${m}M€`;
+  }
+  if (amount! >= 1_000) {
+    return `${Math.round(amount! / 1_000)}K€`;
+  }
+  return `${amount}€`;
+}
 
 // ── Editable cell ─────────────────────────────────────────────────────────────
 
@@ -236,6 +347,9 @@ function ProspectRow({
   enrichment,
   scanStatus,
   onEnrich,
+  colOrder,
+  colVisible,
+  caThreshold,
 }: {
   prospect: Prospect;
   isSelected: boolean;
@@ -246,6 +360,9 @@ function ProspectRow({
   enrichment: EnrichmentData | null;
   scanStatus: ScanSt | undefined;
   onEnrich: (p: Prospect) => void;
+  colOrder: ColId[];
+  colVisible: Set<ColId>;
+  caThreshold: number;
 }) {
   const [p, setP] = useState<Prospect>(init);
   useEffect(() => { setP(init); }, [init]);
@@ -263,129 +380,135 @@ function ProspectRow({
     updateProspect(saved);
   }
 
-  const chaud = p.ouverturesMultiples && p.enConversation;
-  const { bg, text } = STATUT_COLORS[p.statut];
-  const pr           = p.prochaineRelance;
-  const prColor      = relanceDateColor(pr);
-  const noStepsDone  = STEP_ORDER.every((k) => !p.steps[k].done);
+  const chaud       = p.ouverturesMultiples && p.enConversation;
+  const { solidBg } = STATUT_COLORS[p.statut];
+  const pr          = p.prochaineRelance;
+  const prColor     = relanceDateColor(pr);
+  const noStepsDone = STEP_ORDER.every((k) => !p.steps[k].done);
 
-  return (
-    <tr className={`border-b border-slate-100 transition-colors ${chaud ? "bg-amber-50/60 hover:bg-amber-100/50" : "hover:bg-slate-50/60"}`}>
-      {/* Select */}
-      <td className="px-2 py-1.5 text-center w-8">
-        <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(p.id)} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
+  // CA cell helpers
+  const isEstimated = p.revenueSource === "estimé";
+  const caDisplay = formatCAValue(p.annualRevenue, p.revenueRaw, p.revenueSource, isEstimated);
+  const caLow = caThreshold > 0 && p.annualRevenue !== null && p.annualRevenue < caThreshold;
+
+  // Cell definitions per column id
+  const cells: Partial<Record<ColId, React.ReactNode>> = {
+    ca: (
+      <td key="ca" className="px-2 py-1.5 whitespace-nowrap min-w-[90px]">
+        {caDisplay === "—" ? (
+          <span className="text-slate-300 text-sm">—</span>
+        ) : (
+          <span
+            className="text-sm text-slate-700 cursor-default"
+            title={[
+              p.revenueSource ? `Source : ${p.revenueSource}` : "",
+              p.revenueYear   ? p.revenueYear : "",
+              p.revenueRaw    ? p.revenueRaw  : "",
+            ].filter(Boolean).join(" · ")}
+          >
+            {caDisplay}
+            {caLow && (
+              <span
+                className="ml-1 text-red-500 text-xs"
+                title={`CA trop faible pour votre seuil (${(caThreshold/1000).toFixed(0)}K€ minimum)`}
+              >
+                ⚠
+              </span>
+            )}
+            {p.revenueSource && (
+              <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
+                isEstimated
+                  ? "bg-slate-100 text-slate-400"
+                  : "bg-emerald-50 text-emerald-600"
+              }`}>
+                {isEstimated ? "estimé" : p.revenueSource}
+              </span>
+            )}
+          </span>
+        )}
       </td>
-
-      {/* 🔥 */}
-      <td className="px-1 py-1.5 text-center w-6">
-        {chaud && <span title="Prospect chaud" className="text-sm">🔥</span>}
-      </td>
-
-      {/* Marque */}
-      <td className="px-2 py-1.5 font-medium text-slate-900 w-[170px] max-w-[170px]">
-        <EditableCell value={p.marque} onSave={(v) => save("marque", v)} placeholder="Marque" maxWidth="160px" autoFocus={autoFocusField === "marque"} />
-      </td>
-
-      {/* Secteur */}
-      <td className="px-2 py-1.5 min-w-[100px]">
-        <SelectCell value={p.secteur} options={SECTEURS} onSave={(v) => save("secteur", v)} />
-      </td>
-
-      {/* Contact */}
-      <td className="px-2 py-1.5 w-[130px] max-w-[130px]">
+    ),
+    contact: (
+      <td key="contact" className="px-2 py-1.5 w-[130px] max-w-[130px]">
         <EditableCell value={p.contact} onSave={(v) => save("contact", v)} placeholder="Nom" maxWidth="120px" />
       </td>
-
-      {/* Email */}
-      <td className="px-2 py-1.5 w-[190px] max-w-[190px]">
+    ),
+    email: (
+      <td key="email" className="px-2 py-1.5 w-[190px] max-w-[190px]">
         <EditableCell
-          value={p.email}
-          type="email"
-          onSave={(v) => save("email", v)}
-          placeholder="email@…"
-          maxWidth="180px"
+          value={p.email} type="email" onSave={(v) => save("email", v)} placeholder="email@…" maxWidth="180px"
           display={p.email ? (
-            <a
-              href={`mailto:${p.email}`}
-              title={p.email}
-              className="text-blue-600 hover:underline truncate block"
-              style={{ maxWidth: 180 }}
-              onClick={(e) => e.stopPropagation()}
-            >
+            <a href={`mailto:${p.email}`} title={p.email} className="text-blue-600 hover:underline truncate block" style={{ maxWidth: 180 }} onClick={(e) => e.stopPropagation()}>
               {p.email}
             </a>
           ) : undefined}
         />
       </td>
-
-      {/* Shopify */}
-      <td className="px-2 py-1.5 text-center w-[52px]">
+    ),
+    shopify: (
+      <td key="shopify" className="px-2 py-1.5 text-center w-[52px]">
         <EnrichCell enrichment={enrichment} scanStatus={scanStatus} type="shopify" onScan={() => onEnrich(p)} />
       </td>
-
-      {/* Klaviyo */}
-      <td className="px-2 py-1.5 text-center w-[52px]">
+    ),
+    klaviyo: (
+      <td key="klaviyo" className="px-2 py-1.5 text-center w-[52px]">
         <EnrichCell enrichment={enrichment} scanStatus={scanStatus} type="klaviyo" onScan={() => onEnrich(p)} />
       </td>
-
-      {/* Instagram */}
-      <td className="px-2 py-1.5 w-[130px] max-w-[130px]">
+    ),
+    instagram: (
+      <td key="instagram" className="px-2 py-1.5 w-[130px] max-w-[130px]">
         <EnrichCell enrichment={enrichment} scanStatus={scanStatus} type="instagram" onScan={() => onEnrich(p)} />
       </td>
-
-      {/* Gap CRM */}
-      <td className="px-2 py-1.5 min-w-[70px]">
+    ),
+    gapCrm: (
+      <td key="gapCrm" className="px-2 py-1.5 min-w-[70px]">
         <EditableCell value={p.gapCrm} onSave={(v) => save("gapCrm", v)} placeholder="Réf." />
       </td>
-
-      {/* Statut */}
-      <td className="px-2 py-1.5 min-w-[125px]">
+    ),
+    statut: (
+      <td key="statut" className="px-2 py-1.5 min-w-[125px]">
         <SelectCell
-          value={p.statut}
-          options={STATUTS}
-          onSave={(v) => save("statut", v as Statut)}
-          display={<span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${bg} ${text}`}>{p.statut}</span>}
+          value={p.statut} options={STATUTS} onSave={(v) => save("statut", v as Statut)}
+          display={<span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white ${solidBg}`}>{p.statut}</span>}
         />
       </td>
-
-      {/* Notes */}
-      <td className="px-2 py-1.5 max-w-[150px]">
-        <EditableCell
-          value={p.notes}
-          onSave={(v) => save("notes", v)}
-          placeholder="Notes…"
-          maxWidth="140px"
+    ),
+    notes: (
+      <td key="notes" className="px-2 py-1.5 max-w-[150px]">
+        <EditableCell value={p.notes} onSave={(v) => save("notes", v)} placeholder="Notes…" maxWidth="140px"
           display={p.notes ? <span className="truncate block text-slate-600" title={p.notes}>{p.notes}</span> : undefined}
         />
       </td>
-
-      {/* Ouvertures multiples */}
-      <td className="px-2 py-1.5 text-center w-10">
+    ),
+    chaud: (
+      <td key="chaud" className="px-2 py-1.5 text-center w-8">
+        {chaud && <span title="Prospect chaud" className="text-sm">🔥</span>}
+      </td>
+    ),
+    ouvertures: (
+      <td key="ouvertures" className="px-2 py-1.5 text-center w-10">
         <input type="checkbox" checked={p.ouverturesMultiples} onChange={(e) => save("ouverturesMultiples", e.target.checked)} className="w-3.5 h-3.5 accent-orange-500 cursor-pointer" title="Ouvertures multiples" />
       </td>
-
-      {/* En conversation */}
-      <td className="px-2 py-1.5 text-center w-10">
+    ),
+    conversation: (
+      <td key="conversation" className="px-2 py-1.5 text-center w-10">
         <input type="checkbox" checked={p.enConversation} onChange={(e) => save("enConversation", e.target.checked)} className="w-3.5 h-3.5 accent-green-500 cursor-pointer" title="En conversation" />
       </td>
-
-      {/* Relances progress */}
-      <td className="px-2 py-1.5 min-w-[110px]">
+    ),
+    relances: (
+      <td key="relances" className="px-2 py-1.5 min-w-[110px]">
         <StepsProgressCell steps={p.steps} onUpdateStep={saveStep} />
       </td>
-
-      {/* Dernier contact */}
-      <td className="px-2 py-1.5 min-w-[100px]">
-        <EditableCell
-          value={p.dernierContact ?? ""}
-          type="date"
-          onSave={(v) => save("dernierContact", v || null)}
+    ),
+    dernierContact: (
+      <td key="dernierContact" className="px-2 py-1.5 min-w-[100px]">
+        <EditableCell value={p.dernierContact ?? ""} type="date" onSave={(v) => save("dernierContact", v || null)}
           display={<span className="text-slate-600 text-sm">{formatDateFR(p.dernierContact)}</span>}
         />
       </td>
-
-      {/* Prochaine relance */}
-      <td className="px-2 py-1.5 whitespace-nowrap min-w-[110px]">
+    ),
+    prochaineRelance: (
+      <td key="prochaineRelance" className="px-2 py-1.5 whitespace-nowrap min-w-[110px]">
         {noStepsDone ? (
           <span className="text-orange-500 text-sm font-medium">⚠ À contacter</span>
         ) : pr === null ? (
@@ -393,14 +516,33 @@ function ProspectRow({
             ? <span className="text-green-600 text-xs">✅ Terminée</span>
             : <span className="text-slate-400 text-sm">—</span>
         ) : (
-          <span className={`text-sm font-medium ${prColor}`}>
-            {prColor === "text-red-600" ? "⚠ " : ""}
-            {formatDateFR(pr)}
-          </span>
+          <span className={`text-sm font-medium ${prColor}`}>{prColor === "text-red-600" ? "⚠ " : ""}{formatDateFR(pr)}</span>
         )}
       </td>
+    ),
+    secteur: (
+      <td key="secteur" className="px-2 py-1.5 min-w-[100px]">
+        <SelectCell value={p.secteur} options={SECTEURS} onSave={(v) => save("secteur", v)} />
+      </td>
+    ),
+  };
 
-      {/* Actions */}
+  return (
+    <tr className={`border-b border-slate-100 transition-colors ${chaud ? "bg-amber-50/60 hover:bg-amber-100/50" : "hover:bg-slate-50/60"}`}>
+      {/* Select (fixed) */}
+      <td className="px-2 py-1.5 text-center w-8 sticky left-0 z-[5] bg-inherit">
+        <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(p.id)} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
+      </td>
+
+      {/* Marque (frozen) */}
+      <td className="px-2 py-1.5 font-medium text-slate-900 w-[170px] max-w-[170px] sticky left-8 z-[5] bg-inherit shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+        <EditableCell value={p.marque} onSave={(v) => save("marque", v)} placeholder="Marque" maxWidth="160px" autoFocus={autoFocusField === "marque"} />
+      </td>
+
+      {/* Dynamic columns */}
+      {colOrder.filter((id) => colVisible.has(id)).map((id) => cells[id] ?? null)}
+
+      {/* Actions (fixed) */}
       <td className="px-2 py-1.5 text-center w-14">
         <div className="flex items-center justify-center gap-0.5">
           <button onClick={() => onOpen(p.id)} className="text-slate-400 hover:text-blue-600 transition-colors px-1 text-base" title="Ouvrir les détails">⋯</button>
@@ -417,13 +559,13 @@ interface Filters {
   statut: Statut | "Tous"; secteur: Secteur | "Tous";
   dcFrom: string; dcTo: string; prFrom: string; prTo: string;
   chaudsOnly: boolean;
-  shopifyOnly: boolean;
   sansKlaviyoOnly: boolean;
+  caMin: number;
 }
 const EMPTY_FILTERS: Filters = {
   statut: "Tous", secteur: "Tous",
   dcFrom: "", dcTo: "", prFrom: "", prTo: "",
-  chaudsOnly: false, shopifyOnly: false, sansKlaviyoOnly: false,
+  chaudsOnly: false, sansKlaviyoOnly: false, caMin: 0,
 };
 
 function applyFilters(
@@ -439,8 +581,8 @@ function applyFilters(
     if (f.prFrom && (p.prochaineRelance ?? "") < f.prFrom) return false;
     if (f.prTo   && (p.prochaineRelance ?? "") > f.prTo)   return false;
     if (f.chaudsOnly && !(p.ouverturesMultiples && p.enConversation)) return false;
-    if (f.shopifyOnly    && !enrichments[p.id]?.shopifyDetected)               return false;
-    if (f.sansKlaviyoOnly && enrichments[p.id]?.klaviyoDetected !== false)     return false;
+    if (f.sansKlaviyoOnly && enrichments[p.id]?.klaviyoDetected !== false) return false;
+    if (f.caMin > 0 && (p.annualRevenue ?? 0) < f.caMin) return false;
     return true;
   });
 }
@@ -519,6 +661,128 @@ function BulkBar({
       <button onClick={() => { if (!confirm(`Supprimer ${n} ?`)) return; onBulkDelete(); }} className="text-sm bg-red-500 hover:bg-red-400 px-3 py-1 rounded-lg transition-colors">🗑 Supprimer</button>
       <button onClick={onClear} className="ml-auto text-blue-200 hover:text-white text-lg leading-none">×</button>
     </div>
+  );
+}
+
+// ── ColumnPicker ──────────────────────────────────────────────────────────────
+
+function ColumnPicker({
+  colOrder, colVisible, onChange,
+}: {
+  colOrder: ColId[];
+  colVisible: Set<ColId>;
+  onChange: (order: ColId[], visible: Set<ColId>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState<ColId | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
+  const dragSrc = useRef<ColId | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  useEffect(() => { setMounted(true); }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (
+        dropRef.current && !dropRef.current.contains(e.target as Node) &&
+        btnRef.current  && !btnRef.current.contains(e.target as Node)
+      ) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  function handleToggle() {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, left: r.left });
+    }
+    setOpen((v) => !v);
+  }
+
+  function toggleVisible(id: ColId) {
+    const next = new Set(colVisible);
+    next.has(id) ? next.delete(id) : next.add(id);
+    onChange(colOrder, next);
+  }
+
+  function handleDragStart(id: ColId) { dragSrc.current = id; }
+  function handleDragOver(e: React.DragEvent, id: ColId) { e.preventDefault(); setDragOver(id); }
+  function handleDrop(e: React.DragEvent, targetId: ColId) {
+    e.preventDefault();
+    const srcId = dragSrc.current;
+    if (!srcId || srcId === targetId) { setDragOver(null); return; }
+    const next = [...colOrder];
+    const from = next.indexOf(srcId);
+    const to   = next.indexOf(targetId);
+    next.splice(from, 1);
+    next.splice(to, 0, srcId);
+    setDragOver(null);
+    dragSrc.current = null;
+    onChange(next, colVisible);
+  }
+
+  const visibleCount = colOrder.filter((id) => colVisible.has(id)).length;
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={handleToggle}
+        className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors flex items-center gap-1.5"
+      >
+        Colonnes ⚙
+        <span className="bg-slate-200 text-slate-600 text-xs rounded-full px-1.5 py-0.5 font-medium">
+          {visibleCount + 1}
+        </span>
+      </button>
+
+      {open && mounted && createPortal(
+        <div
+          ref={dropRef}
+          style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 9999 }}
+          className="bg-white rounded-xl shadow-xl border border-slate-200 p-3 w-64"
+        >
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Colonnes visibles</p>
+
+          {/* Frozen Marque */}
+          <div className="flex items-center gap-2 py-1.5 opacity-50 cursor-not-allowed select-none">
+            <span className="text-slate-300 text-xs">⠿</span>
+            <input type="checkbox" checked readOnly className="w-3.5 h-3.5" />
+            <span className="text-sm text-slate-700">Marque</span>
+            <span className="ml-auto text-xs text-slate-400">figée</span>
+          </div>
+
+          {colOrder.map((id) => {
+            const def = ALL_COLS.find((c) => c.id === id)!;
+            const isOver = dragOver === id;
+            return (
+              <div
+                key={id}
+                draggable
+                onDragStart={() => handleDragStart(id)}
+                onDragOver={(e) => handleDragOver(e, id)}
+                onDrop={(e) => handleDrop(e, id)}
+                onDragLeave={() => setDragOver(null)}
+                className={`flex items-center gap-2 py-1.5 cursor-grab rounded px-1 transition-colors ${isOver ? "bg-blue-50 border-l-2 border-blue-400" : "hover:bg-slate-50"}`}
+              >
+                <span className="text-slate-300 text-xs select-none">⠿</span>
+                <input
+                  type="checkbox"
+                  checked={colVisible.has(id)}
+                  onChange={() => toggleVisible(id)}
+                  className="w-3.5 h-3.5 accent-blue-600 cursor-pointer"
+                />
+                <span className="text-sm text-slate-700 select-none flex-1">{def.label}</span>
+              </div>
+            );
+          })}
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 
@@ -1205,7 +1469,21 @@ export default function ProspectsTable() {
   const [scanProgress, setScanProgress]   = useState<{ done: number; total: number } | null>(null);
   const [toasts, setToasts]               = useState<Array<{ id: string; message: string }>>([]);
   const [mounted, setMounted]             = useState(false);
+  const [sortCol, setSortCol]             = useState<SortCol | null>(null);
+  const [sortDir, setSortDir]             = useState<SortDir>("asc");
+  const [colOrder, setColOrder]           = useState<ColId[]>(() => ALL_COLS.map((c) => c.id));
+  const [colVisible, setColVisible]       = useState<Set<ColId>>(() => new Set(ALL_COLS.filter((c) => c.defaultVisible).map((c) => c.id)));
+  const [caThreshold, setCaThreshold]     = useState(150000);
+
   useEffect(() => { setMounted(true); }, []);
+
+  // Load column prefs + CA threshold from localStorage (client-side only)
+  useEffect(() => {
+    const prefs = loadColPrefs();
+    setColOrder(prefs.order);
+    setColVisible(new Set(prefs.visible));
+    setCaThreshold(getCaThreshold());
+  }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const searchParams = useSearchParams();
 
@@ -1270,14 +1548,29 @@ export default function ProspectsTable() {
         }),
       });
       if (!res.ok) throw new Error();
-      const d: EnrichmentData = await res.json();
+      const d = await res.json() as EnrichmentData & {
+        annualRevenue?: number | null;
+        revenueSource?: string;
+        revenueYear?: string;
+        revenueRaw?: string;
+      };
       saveEnrichment(p.id, d);
 
-      // Persist auto-found website / instagram back to prospect
+      // Persist auto-found website / instagram / CA back to prospect
       let changed = false;
       let updated = { ...p };
-      if (d.websiteFound && !p.website) { updated = { ...updated, website: d.websiteFound }; changed = true; }
+      if (d.websiteFound && !p.website)         { updated = { ...updated, website: d.websiteFound };                 changed = true; }
       if (d.instagramHandleFound && !p.instagramHandle) { updated = { ...updated, instagramHandle: d.instagramHandleFound }; changed = true; }
+      if (d.annualRevenue != null && !p.annualRevenue) {
+        updated = {
+          ...updated,
+          annualRevenue: d.annualRevenue,
+          revenueSource: (d.revenueSource ?? "") as Prospect["revenueSource"],
+          revenueYear:   d.revenueYear ?? "",
+          revenueRaw:    d.revenueRaw  ?? "",
+        };
+        changed = true;
+      }
       if (changed) { updateProspect(updated); reload(); }
 
       setEnrichments((prev) => ({ ...prev, [p.id]: d }));
@@ -1302,16 +1595,34 @@ export default function ProspectsTable() {
       setScanProgress({ done: i + 1, total: toScan.length });
     }
     setScanProgress(null);
+    // Report CA count after reload
+    setTimeout(() => {
+      const allP = prospects;
+      const caFound = allP.filter((p) => p.annualRevenue != null).length;
+      if (caFound > 0) showToast(`CA trouvé pour ${caFound} prospect${caFound > 1 ? "s" : ""}`);
+    }, 500);
   }
 
   function setFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((f) => ({ ...f, [key]: value }));
   }
 
-  const visible    = applyFilters(prospects, filters, enrichments);
+  function handleSort(col: SortCol) {
+    if (sortCol === col) setSortDir((d) => d === "asc" ? "desc" : "asc");
+    else { setSortCol(col); setSortDir("asc"); }
+  }
+
+  function handleColChange(order: ColId[], visible: Set<ColId>) {
+    setColOrder(order);
+    setColVisible(visible);
+    saveColPrefs(order, Array.from(visible));
+  }
+
+  const filtered   = applyFilters(prospects, filters, enrichments);
+  const visible    = sortProspects(filtered, sortCol, sortDir, enrichments);
   const hasFilters = filters.statut !== "Tous" || filters.secteur !== "Tous" ||
     filters.dcFrom || filters.dcTo || filters.prFrom || filters.prTo ||
-    filters.chaudsOnly || filters.shopifyOnly || filters.sansKlaviyoOnly;
+    filters.chaudsOnly || filters.sansKlaviyoOnly || filters.caMin > 0;
 
   const drawerProspect = drawerProspectId
     ? (prospects.find((p) => p.id === drawerProspectId) ?? null)
@@ -1371,6 +1682,7 @@ export default function ProspectsTable() {
       ouverturesMultiples: false, enConversation: false,
       dernierContact: null, relanceFaite: false,
       foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
+      annualRevenue: null, revenueSource: "", revenueYear: "", revenueRaw: "",
     });
     setNewRowId(np.id);
     // Auto-enrich in background (will be a no-op if marque is still empty)
@@ -1403,6 +1715,7 @@ export default function ProspectsTable() {
           website:         row["Website"] || "",
           instagramHandle: row["Instagram"] || "",
           foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
+      annualRevenue: null, revenueSource: "", revenueYear: "", revenueRaw: "",
           statut:     STATUTS.includes(rawStatut) ? rawStatut : "À contacter",
           notes:      row["Notes"] || "",
           steps:      emptySteps(),
@@ -1457,16 +1770,23 @@ export default function ProspectsTable() {
             </label>
           </Fld>
           <Fld label=" ">
-            <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 h-[30px]">
-              <input type="checkbox" checked={filters.shopifyOnly} onChange={(e) => setFilter("shopifyOnly", e.target.checked)} className="w-3.5 h-3.5 accent-blue-500" />
-              🛍 Shopify
-            </label>
-          </Fld>
-          <Fld label=" ">
             <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 h-[30px]" title="Opportunités sans Klaviyo">
               <input type="checkbox" checked={filters.sansKlaviyoOnly} onChange={(e) => setFilter("sansKlaviyoOnly", e.target.checked)} className="w-3.5 h-3.5 accent-purple-500" />
               ⚡ Sans Klaviyo
             </label>
+          </Fld>
+          <Fld label="CA minimum">
+            <select
+              value={filters.caMin}
+              onChange={(e) => setFilter("caMin", Number(e.target.value))}
+              className={SEL}
+            >
+              <option value={0}>Tous</option>
+              <option value={150000}>150K€+</option>
+              <option value={500000}>500K€+</option>
+              <option value={1000000}>1M€+</option>
+              <option value={2000000}>2M€+</option>
+            </select>
           </Fld>
           {hasFilters && (
             <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-xs text-slate-400 hover:text-red-500 underline self-end pb-0.5">
@@ -1486,6 +1806,7 @@ export default function ProspectsTable() {
           {selectedIds.size > 0 && <span className="ml-2 text-blue-600">· {selectedIds.size} sélectionné{selectedIds.size > 1 ? "s" : ""}</span>}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <ColumnPicker colOrder={colOrder} colVisible={colVisible} onChange={handleColChange} />
           {scanProgress ? (
             <span className="text-xs text-slate-500">
               Scan {scanProgress.done}/{scanProgress.total}…
@@ -1518,32 +1839,48 @@ export default function ProspectsTable() {
           <table className="w-full text-sm border-collapse">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-2 py-2 w-8 text-center">
+                {/* Select all (fixed) */}
+                <th className="px-2 py-2 w-8 text-center sticky left-0 z-20 bg-slate-50">
                   <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" title="Tout sélectionner" />
                 </th>
-                <TH> </TH>
-                <TH>Marque</TH>
-                <TH>Secteur</TH>
-                <TH>Contact</TH>
-                <TH>Email</TH>
-                <TH center title="Shopify">🛍</TH>
-                <TH center title="Klaviyo">⚡</TH>
-                <TH>Instagram</TH>
-                <TH>Gap CRM</TH>
-                <TH>Statut</TH>
-                <TH>Notes</TH>
-                <TH center title="Ouvertures multiples">✉×</TH>
-                <TH center title="En conversation">💬</TH>
-                <TH center>Relances</TH>
-                <TH>Dernier contact</TH>
-                <TH>Prochaine relance</TH>
+                {/* Marque (frozen) */}
+                <SortTH col="marque" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}
+                  className="sticky left-8 z-20 bg-slate-50 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                  Marque
+                </SortTH>
+                {/* Dynamic columns */}
+                {colOrder.filter((id) => colVisible.has(id)).map((id) => {
+                  const SORTABLE_COLS: Partial<Record<ColId, SortCol>> = {
+                    statut: "statut", dernierContact: "dernierContact",
+                    prochaineRelance: "prochaineRelance", instagram: "instagram",
+                    relances: "relances", ca: "ca",
+                  };
+                  const COL_LABELS: Record<ColId, string> = {
+                    contact: "Contact", email: "Email", shopify: "🛍", klaviyo: "⚡",
+                    instagram: "Instagram", gapCrm: "Gap CRM", statut: "Statut", notes: "Notes",
+                    chaud: "🔥", ouvertures: "✉×", conversation: "💬",
+                    relances: "Relances", dernierContact: "Dernier contact",
+                    prochaineRelance: "Prochaine relance", secteur: "Secteur", ca: "CA",
+                  };
+                  const sortColId = SORTABLE_COLS[id];
+                  const center = ["shopify","klaviyo","chaud","ouvertures","conversation"].includes(id);
+                  if (sortColId) {
+                    return (
+                      <SortTH key={id} col={sortColId} sortCol={sortCol} sortDir={sortDir} onSort={handleSort} center={center}>
+                        {COL_LABELS[id]}
+                      </SortTH>
+                    );
+                  }
+                  return <TH key={id} center={center}>{COL_LABELS[id]}</TH>;
+                })}
+                {/* Actions (fixed) */}
                 <TH center> </TH>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 ? (
                 <tr>
-                  <td colSpan={18} className="px-4 py-10 text-center text-slate-400 text-sm">
+                  <td colSpan={3 + colOrder.filter((id) => colVisible.has(id)).length} className="px-4 py-10 text-center text-slate-400 text-sm">
                     {hasFilters ? "Aucun prospect ne correspond aux filtres." : "Aucun prospect. Cliquez sur « + Ajouter » ou importez un CSV."}
                   </td>
                 </tr>
@@ -1560,6 +1897,9 @@ export default function ProspectsTable() {
                     enrichment={enrichments[p.id] ?? null}
                     scanStatus={scanStatus[p.id]}
                     onEnrich={(p) => enrichOne(p)}
+                    colOrder={colOrder}
+                    colVisible={colVisible}
+                    caThreshold={caThreshold}
                   />
                 ))
               )}
@@ -1597,6 +1937,33 @@ function TH({ children, center, title }: { children: React.ReactNode; center?: b
   return (
     <th title={title} className={`px-2 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50 ${center ? "text-center" : "text-left"}`}>
       {children}
+    </th>
+  );
+}
+
+function SortTH({
+  children, col, sortCol, sortDir, onSort, center, className,
+}: {
+  children: React.ReactNode;
+  col: SortCol;
+  sortCol: SortCol | null;
+  sortDir: SortDir;
+  onSort: (col: SortCol) => void;
+  center?: boolean;
+  className?: string;
+}) {
+  const active = sortCol === col;
+  return (
+    <th
+      onClick={() => onSort(col)}
+      className={`px-2 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wide whitespace-nowrap bg-slate-50 cursor-pointer select-none hover:bg-slate-100 transition-colors ${center ? "text-center" : "text-left"} ${className ?? ""}`}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        <span className={active ? "text-blue-500" : "text-slate-300"}>
+          {active ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+        </span>
+      </span>
     </th>
   );
 }

@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import GmailSettings from "@/components/settings/GmailSettings";
 import ApiKeysSettings from "@/components/settings/ApiKeysSettings";
+import CaThresholdSettings from "@/components/settings/CaThresholdSettings";
 
 export const metadata = { title: "Paramètres — KlavioPro" };
 
@@ -17,6 +18,8 @@ export default function SettingsPage() {
       </Suspense>
 
       <ApiKeysSettings />
+
+      <CaThresholdSettings />
     </div>
   );
 }

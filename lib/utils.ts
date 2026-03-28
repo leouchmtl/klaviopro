@@ -194,17 +194,17 @@ function splitCSVLine(line: string): string[] {
   return result;
 }
 
-export const STATUT_COLORS: Record<Statut, { bg: string; text: string }> = {
-  "À contacter":  { bg: "bg-blue-100",   text: "text-blue-800"   },
-  "Contacté J0":  { bg: "bg-teal-100",   text: "text-teal-800"   },
-  "Relance J+5":  { bg: "bg-yellow-100", text: "text-yellow-800" },
-  "Relance J+12": { bg: "bg-orange-100", text: "text-orange-800" },
-  "Relance J+21": { bg: "bg-amber-100",  text: "text-amber-800"  },
-  "Relance J+35": { bg: "bg-purple-100", text: "text-purple-800" },
-  "Relance J+60": { bg: "bg-indigo-100", text: "text-indigo-800" },
-  Client:         { bg: "bg-green-100",  text: "text-green-800"  },
-  Refus:          { bg: "bg-red-100",    text: "text-red-800"    },
-  "Sans besoin":  { bg: "bg-gray-100",   text: "text-gray-600"   },
+export const STATUT_COLORS: Record<Statut, { bg: string; text: string; solidBg: string }> = {
+  "À contacter":  { bg: "bg-blue-100",   text: "text-blue-700",   solidBg: "bg-blue-500"   },
+  "Contacté J0":  { bg: "bg-indigo-100", text: "text-indigo-700", solidBg: "bg-indigo-500" },
+  "Relance J+5":  { bg: "bg-orange-100", text: "text-orange-700", solidBg: "bg-orange-500" },
+  "Relance J+12": { bg: "bg-amber-100",  text: "text-amber-700",  solidBg: "bg-amber-500"  },
+  "Relance J+21": { bg: "bg-red-100",    text: "text-red-600",    solidBg: "bg-red-500"    },
+  "Relance J+35": { bg: "bg-red-100",    text: "text-red-700",    solidBg: "bg-red-600"    },
+  "Relance J+60": { bg: "bg-violet-100", text: "text-violet-700", solidBg: "bg-violet-600" },
+  Client:         { bg: "bg-green-100",  text: "text-green-700",  solidBg: "bg-green-600"  },
+  Refus:          { bg: "bg-gray-100",   text: "text-gray-600",   solidBg: "bg-gray-500"   },
+  "Sans besoin":  { bg: "bg-gray-100",   text: "text-gray-500",   solidBg: "bg-gray-500"   },
 };
 
 const TERMINAL_STATUTS: readonly Statut[] = ["Client", "Refus", "Sans besoin"];

@@ -213,6 +213,158 @@ async function fetchInstagramFollowers(handle: string): Promise<string> {
   }
 }
 
+// ── CA scraping ───────────────────────────────────────────────────────────────
+
+type RevenueSource = "societe.com" | "manageo" | "pappers" | "estimé";
+
+interface CaResult {
+  amount: number;
+  source: RevenueSource;
+  year: string;
+  raw: string;
+}
+
+async function fetchHtmlCA(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      headers: BROWSER_HEADERS,
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    if (!res.ok) return "";
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+// Extract a euro amount from a raw text snippet
+function parseEuroAmount(text: string): number | null {
+  // "X,X M€" or "X M€"
+  const mM = text.match(/(\d+[,.]?\d*)\s*M\s*[€EUReuro]/i);
+  if (mM) return Math.round(parseFloat(mM[1].replace(",", ".")) * 1_000_000);
+  // "X K€"
+  const kM = text.match(/(\d+[,.]?\d*)\s*K\s*[€EUReuro]/i);
+  if (kM) return Math.round(parseFloat(kM[1].replace(",", ".")) * 1_000);
+  // Plain number with spaces/dots as thousand separator followed by €
+  const plain = text.match(/([\d\s]{2,15})\s*€/);
+  if (plain) {
+    const n = parseInt(plain[1].replace(/[\s.]/g, ""));
+    if (!isNaN(n) && n >= 1000) return n;
+  }
+  return null;
+}
+
+// Find a CA value near a keyword in a block of text
+function extractCaFromText(text: string): { amount: number; year: string; raw: string } | null {
+  // Look for "chiffre d'affaires", "ca :", "ca annuel" near a euro value
+  const caRe = /chiffre\s+d['']affaires|(?:^|\s)CA\s*[:=]?(?:\s|$)/gim;
+  let m: RegExpExecArray | null;
+  while ((m = caRe.exec(text)) !== null) {
+    const ctx = text.slice(m.index, m.index + 200);
+    const amount = parseEuroAmount(ctx);
+    if (amount && amount >= 10000) {
+      const yearM = ctx.match(/20\d\d/);
+      return { amount, year: yearM?.[0] ?? "", raw: ctx.replace(/\s+/g, " ").slice(0, 80) };
+    }
+  }
+  return null;
+}
+
+function toBrandSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+async function fetchCaFromSociete(brandName: string): Promise<CaResult | null> {
+  const slug = toBrandSlug(brandName);
+  const urls = [
+    `https://www.societe.com/cgi-bin/search?champs=${encodeURIComponent(brandName)}`,
+    `https://www.societe.com/societe/${slug}/`,
+  ];
+  for (const url of urls) {
+    const html = await fetchHtmlCA(url);
+    if (!html) continue;
+    // Strip tags for easier parsing
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/\s+/g, " ");
+    const found = extractCaFromText(text);
+    if (found) return { ...found, source: "societe.com" };
+  }
+  return null;
+}
+
+async function fetchCaFromManageo(brandName: string): Promise<CaResult | null> {
+  const url = `https://www.manageo.fr/recherche?q=${encodeURIComponent(brandName)}`;
+  const html = await fetchHtmlCA(url);
+  if (!html) return null;
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ");
+  const found = extractCaFromText(text);
+  return found ? { ...found, source: "manageo" } : null;
+}
+
+async function fetchCaFromPappers(brandName: string): Promise<CaResult | null> {
+  const url = `https://www.pappers.fr/recherche?q=${encodeURIComponent(brandName)}`;
+  const html = await fetchHtmlCA(url);
+  if (!html) return null;
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ");
+  const found = extractCaFromText(text);
+  return found ? { ...found, source: "pappers" } : null;
+}
+
+function parseIgFollowers(igStr: string): number {
+  if (!igStr) return 0;
+  const m = igStr.match(/([\d,.]+)\s*([KkMm]?)\s*abonnés/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1].replace(/,/g, "."));
+  const u = m[2].toLowerCase();
+  if (u === "k") return n * 1000;
+  if (u === "m") return n * 1_000_000;
+  return n;
+}
+
+function estimateCaFromFollowers(igStr: string): CaResult | null {
+  const followers = parseIgFollowers(igStr);
+  if (followers <= 0) return null;
+  let raw: string;
+  let midpoint: number;
+  if (followers < 5_000)        { raw = "< 150K€ estimé";         midpoint = 75_000;     }
+  else if (followers < 20_000)  { raw = "150K€ - 500K€ estimé";   midpoint = 325_000;    }
+  else if (followers < 100_000) { raw = "500K€ - 2M€ estimé";     midpoint = 1_250_000;  }
+  else if (followers < 500_000) { raw = "2M€ - 10M€ estimé";      midpoint = 6_000_000;  }
+  else                          { raw = "> 10M€ estimé";           midpoint = 15_000_000; }
+  return { amount: midpoint, source: "estimé", year: "", raw };
+}
+
+async function fetchAnnualRevenue(brandName: string): Promise<CaResult | null> {
+  if (!brandName) return null;
+  for (const fetcher of [fetchCaFromSociete, fetchCaFromManageo, fetchCaFromPappers]) {
+    try {
+      const result = await fetcher(brandName);
+      if (result) return result;
+    } catch {}
+  }
+  return null;
+}
+
 // ── Main route ────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -289,7 +441,14 @@ export async function POST(req: NextRequest) {
   const klaviyo = detectKlaviyo(html);
   const description = extractMeta(html, "description").slice(0, 250);
 
-  const instagram = await fetchInstagramFollowers(instagramHandle);
+  // Run Instagram fetch + CA scraping in parallel
+  const [instagram, caFromScrape] = await Promise.all([
+    fetchInstagramFollowers(instagramHandle),
+    brandName ? fetchAnnualRevenue(brandName) : Promise.resolve(null),
+  ]);
+
+  // Fall back to follower-based estimation if scraping found nothing
+  const ca = caFromScrape ?? (instagramHandle ? estimateCaFromFollowers(instagram) : null);
 
   // Partial success: if homepage blocked but other data was found, return what we have
   const homepageBlocked = !html && !!scanError;
@@ -308,6 +467,10 @@ export async function POST(req: NextRequest) {
     updatedAt:       new Date().toISOString(),
     websiteFound,
     instagramHandleFound,
+    annualRevenue:   ca?.amount    ?? null,
+    revenueSource:   ca?.source    ?? "",
+    revenueYear:     ca?.year      ?? "",
+    revenueRaw:      ca?.raw       ?? "",
     ...(scanError ? { scanError } : {}),
   });
 }

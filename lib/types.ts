@@ -41,6 +41,7 @@ export interface ProspectSteps {
 
 export type FoundersSource = "mentions_légales" | "hunter" | "apollo" | "about_page" | "";
 export type FoundersConfidence = "élevée" | "moyenne" | "faible" | "";
+export type RevenueSource = "societe.com" | "manageo" | "pappers" | "estimé" | "";
 
 export interface Prospect {
   id: string;
@@ -65,6 +66,11 @@ export interface Prospect {
   foundersEmail: string;
   foundersSource: FoundersSource;
   foundersConfidence: FoundersConfidence;
+  // Chiffre d'affaires
+  annualRevenue: number | null;
+  revenueSource: RevenueSource;
+  revenueYear: string;
+  revenueRaw: string;
 }
 
 export interface EnrichmentData {

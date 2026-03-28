@@ -1,4 +1,4 @@
-import type { Prospect, KPIMonth, ProspectSteps, EmailRecord, EnrichmentData } from "./types";
+import type { Prospect, KPIMonth, ProspectSteps, EmailRecord, EnrichmentData, RevenueSource } from "./types";
 import type { EmailVariant } from "./emailGenerator";
 import { withRelance } from "./utils";
 
@@ -41,7 +41,24 @@ function applyDefaults(raw: Record<string, unknown>): Prospect {
     foundersEmail:       (raw.foundersEmail as string)       ?? "",
     foundersSource:      (raw.foundersSource as Prospect["foundersSource"]) ?? "",
     foundersConfidence:  (raw.foundersConfidence as Prospect["foundersConfidence"]) ?? "",
+    annualRevenue:       (raw.annualRevenue as number | null) ?? null,
+    revenueSource:       (raw.revenueSource as RevenueSource) ?? "",
+    revenueYear:         (raw.revenueYear as string)          ?? "",
+    revenueRaw:          (raw.revenueRaw as string)           ?? "",
   };
+}
+
+// ── CA threshold ──────────────────────────────────────────────────────────────
+
+const CA_THRESHOLD_KEY = "klaviopro_ca_threshold";
+
+export function getCaThreshold(): number {
+  if (typeof window === "undefined") return 150000;
+  try { return parseInt(localStorage.getItem(CA_THRESHOLD_KEY) ?? "150000") || 150000; } catch { return 150000; }
+}
+
+export function saveCaThreshold(v: number): void {
+  try { localStorage.setItem(CA_THRESHOLD_KEY, String(v)); } catch {}
 }
 
 // ── Prospects ────────────────────────────────────────────────────────────────
