@@ -859,6 +859,30 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
     } catch {}
   }
 
+  function handleSyncFromGmail(sortedSentEmails: Array<{ date: string }>) {
+    const count = Math.min(sortedSentEmails.length, STEP_ORDER.length);
+    const newSteps = { ...p.steps };
+    for (let i = 0; i < count; i++) {
+      const key = STEP_ORDER[i];
+      if (!newSteps[key].done) {
+        newSteps[key] = { done: true, date: sortedSentEmails[i].date };
+      }
+    }
+    // Derive statut + dernierContact from highest done step
+    let statut: Statut = "À contacter";
+    let dernierContact: string | null = null;
+    for (let i = STEP_ORDER.length - 1; i >= 0; i--) {
+      if (newSteps[STEP_ORDER[i]].done) {
+        statut = STEP_TO_STATUT[STEP_ORDER[i]];
+        dernierContact = newSteps[STEP_ORDER[i]].date ?? today();
+        break;
+      }
+    }
+    const updated = withRelance({ ...p, steps: newSteps, statut, dernierContact });
+    setP(updated);
+    updateProspect(updated);
+  }
+
   function handleApplyContact(result: { name: string; email: string; source: FoundersSource; confidence: FoundersConfidence }) {
     const updated = withRelance({
       ...p,
@@ -904,7 +928,7 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
           {tab === "infos"
             ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} onApplyContact={handleApplyContact} onRefreshCA={handleRefreshCA} />
             : tab === "emails"
-            ? <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} initialCompose={coldCompose} onConsumeCompose={() => setColdCompose(null)} />
+            ? <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} initialCompose={coldCompose} onConsumeCompose={() => setColdCompose(null)} onSyncFromGmail={handleSyncFromGmail} />
             : <ColdEmailTab prospect={p} onSendViaGmail={handleSendViaGmail} />}
         </div>
       </div>
@@ -1191,8 +1215,13 @@ function formatDateLong(dateStr: string): string {
 
 interface GmailStatus { connected: boolean; email: string }
 
+interface GmailSyncProposal {
+  sentCount: number;
+  sortedSentEmails: Array<{ date: string }>;
+}
+
 function EmailsTab({
-  prospect, emails, onRefresh, onAfterSend, onReceivedDetected, initialCompose, onConsumeCompose,
+  prospect, emails, onRefresh, onAfterSend, onReceivedDetected, initialCompose, onConsumeCompose, onSyncFromGmail,
 }: {
   prospect: Prospect;
   emails: EmailRecord[];
@@ -1201,6 +1230,7 @@ function EmailsTab({
   onReceivedDetected: () => void;
   initialCompose?: { subject: string; body: string } | null;
   onConsumeCompose?: () => void;
+  onSyncFromGmail?: (sortedSentEmails: Array<{ date: string }>) => void;
 }) {
   const [mode, setMode]               = useState<"idle" | "compose" | "received">("idle");
   const [compose, setCompose]         = useState({ subject: "", body: "" });
@@ -1212,6 +1242,7 @@ function EmailsTab({
   const [sending, setSending]         = useState(false);
   const [sendError, setSendError]     = useState("");
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const [syncProposal, setSyncProposal] = useState<GmailSyncProposal | null>(null);
 
   // Pre-fill compose when triggered from cold email tab
   useEffect(() => {
@@ -1233,6 +1264,7 @@ function EmailsTab({
   function fetchGmailThreads() {
     if (!gmailStatus?.connected || !prospect.email) return;
     setGmailLoading(true);
+    setSyncProposal(null);
     const params = new URLSearchParams({ email: prospect.email });
     if (prospect.marque) params.set("brand", prospect.marque);
     if (prospect.foundersName) params.set("contact", prospect.foundersName);
@@ -1243,6 +1275,21 @@ function EmailsTab({
         const msgs: GmailMsg[] = d.messages ?? [];
         setGmailMsgs(msgs);
         if (msgs.some((m) => m.direction === "reçu")) onReceivedDetected();
+        // Compute sync proposal from sent emails
+        if (onSyncFromGmail) {
+          const sortedSent = msgs
+            .filter((m) => m.direction === "envoyé")
+            .sort((a, b) => a.date.localeCompare(b.date));
+          if (sortedSent.length > 0) {
+            // Only propose if at least one step would be newly checked
+            const wouldChange = sortedSent.some(
+              (_, i) => i < STEP_ORDER.length && !prospect.steps[STEP_ORDER[i]].done
+            );
+            if (wouldChange) {
+              setSyncProposal({ sentCount: sortedSent.length, sortedSentEmails: sortedSent });
+            }
+          }
+        }
       })
       .catch(() => setGmailMsgs([]))
       .finally(() => setGmailLoading(false));
@@ -1337,6 +1384,35 @@ function EmailsTab({
           >
             {gmailLoading ? "…" : "Rafraîchir"}
           </button>
+        </div>
+      )}
+
+      {/* Gmail sync proposal banner */}
+      {syncProposal && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 space-y-2.5">
+          <p className="text-sm text-blue-800 font-medium">
+            📧 {syncProposal.sentCount} email{syncProposal.sentCount > 1 ? "s" : ""} envoyé{syncProposal.sentCount > 1 ? "s" : ""} trouvé{syncProposal.sentCount > 1 ? "s" : ""} avec ce contact.
+          </p>
+          <p className="text-xs text-blue-600">
+            Mettre à jour les étapes de relance automatiquement ?
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                onSyncFromGmail!(syncProposal.sortedSentEmails);
+                setSyncProposal(null);
+              }}
+              className="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+            >
+              Oui, mettre à jour
+            </button>
+            <button
+              onClick={() => setSyncProposal(null)}
+              className="text-xs px-3 py-1.5 border border-blue-300 text-blue-700 hover:bg-blue-100 rounded-lg transition-colors"
+            >
+              Non merci
+            </button>
+          </div>
         </div>
       )}
 
