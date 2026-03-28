@@ -1,13 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Prospect, EnrichmentData } from "@/lib/types";
 import { getEnrichment, saveEnrichment } from "@/lib/storage";
 
-export default function EnrichmentPanel({ prospect }: { prospect: Prospect }) {
-  const [data, setData] = useState<EnrichmentData | null>(() =>
-    getEnrichment(prospect.id)
+export default function EnrichmentPanel({
+  prospect,
+  externalData,
+}: {
+  prospect: Prospect;
+  externalData?: EnrichmentData | null;
+}) {
+  const [data, setData] = useState<EnrichmentData | null>(
+    () => externalData ?? getEnrichment(prospect.id)
   );
+
+  // Sync when a parent re-scan completes
+  useEffect(() => {
+    if (externalData) setData(externalData);
+  }, [externalData]);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
 

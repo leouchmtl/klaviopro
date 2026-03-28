@@ -39,6 +39,9 @@ export interface ProspectSteps {
   j60: StepEntry;
 }
 
+export type FoundersSource = "mentions_légales" | "hunter" | "apollo" | "about_page" | "";
+export type FoundersConfidence = "élevée" | "moyenne" | "faible" | "";
+
 export interface Prospect {
   id: string;
   marque: string;
@@ -57,6 +60,11 @@ export interface Prospect {
   prochaineRelance: string | null; // auto-calculated
   relanceFaite: boolean;
   createdAt: string;
+  // Contact dirigeant
+  foundersName: string;
+  foundersEmail: string;
+  foundersSource: FoundersSource;
+  foundersConfidence: FoundersConfidence;
 }
 
 export interface EnrichmentData {

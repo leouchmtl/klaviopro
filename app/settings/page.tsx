@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import GmailSettings from "@/components/settings/GmailSettings";
+import ApiKeysSettings from "@/components/settings/ApiKeysSettings";
 
 export const metadata = { title: "Paramètres — KlavioPro" };
 
@@ -14,6 +15,8 @@ export default function SettingsPage() {
       <Suspense fallback={<div className="text-sm text-slate-400">Chargement…</div>}>
         <GmailSettings />
       </Suspense>
+
+      <ApiKeysSettings />
     </div>
   );
 }

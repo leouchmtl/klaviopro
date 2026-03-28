@@ -3,13 +3,14 @@
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord, EnrichmentData } from "@/lib/types";
+import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord, EnrichmentData, FoundersSource, FoundersConfidence } from "@/lib/types";
 import { STATUTS, SECTEURS } from "@/lib/types";
 import {
   updateProspect,
   saveProspects,
   emptySteps,
   getEmails,
+  getEnrichment,
   saveEmailRecord,
   deleteEmailRecord,
   saveEnrichment,
@@ -30,6 +31,7 @@ import { useProspects } from "@/lib/hooks";
 import type { GmailMsg } from "@/lib/gmail";
 import ColdEmailTab from "@/components/prospects/ColdEmailTab";
 import EnrichmentPanel from "@/components/prospects/EnrichmentPanel";
+import ContactFinderPanel from "@/components/prospects/ContactFinderPanel";
 
 // ── Editable cell ─────────────────────────────────────────────────────────────
 
@@ -522,7 +524,7 @@ function BulkBar({
 
 // ── Prospect Drawer ───────────────────────────────────────────────────────────
 
-function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClose: () => void }) {
+function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect: Prospect; onClose: () => void; onContactFound?: (msg: string) => void }) {
   const [tab, setTab]     = useState<"infos" | "emails" | "cold">("infos");
   const [p, setP]         = useState<Prospect>(init);
   const [emails, setEmails] = useState<EmailRecord[]>([]);
@@ -569,6 +571,21 @@ function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClo
     if (!p.enConversation) save("enConversation", true);
   }
 
+  function handleApplyContact(result: { name: string; email: string; source: FoundersSource; confidence: FoundersConfidence }) {
+    const updated = withRelance({
+      ...p,
+      contact:            result.name,
+      email:              result.email || p.email,
+      foundersName:       result.name,
+      foundersEmail:      result.email,
+      foundersSource:     result.source,
+      foundersConfidence: result.confidence,
+    });
+    setP(updated);
+    updateProspect(updated);
+    onContactFound?.(`Contact appliqué : ${result.name}`);
+  }
+
   return (
     <>
       <div className="fixed inset-0 bg-black/25 z-40" onClick={onClose} />
@@ -597,7 +614,7 @@ function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClo
 
         <div className="flex-1 overflow-y-auto">
           {tab === "infos"
-            ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} />
+            ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} onApplyContact={handleApplyContact} />
             : tab === "emails"
             ? <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} initialCompose={coldCompose} onConsumeCompose={() => setColdCompose(null)} />
             : <ColdEmailTab prospect={p} onSendViaGmail={handleSendViaGmail} />}
@@ -609,16 +626,71 @@ function ProspectDrawer({ prospect: init, onClose }: { prospect: Prospect; onClo
 
 // ── InfosTab ──────────────────────────────────────────────────────────────────
 
+type FieldScan = { field: "website" | "instagram"; status: "scanning" | "success" | "failed"; error?: string } | null;
+
 function InfosTab({
-  p, onSave, onSaveStep,
+  p, onSave, onSaveStep, onApplyContact,
 }: {
   p: Prospect;
   onSave: <K extends keyof Prospect>(f: K, v: Prospect[K]) => void;
   onSaveStep: (k: keyof ProspectSteps, e: StepEntry) => void;
+  onApplyContact?: (result: { name: string; email: string; source: FoundersSource; confidence: FoundersConfidence }) => void;
 }) {
   const pr          = p.prochaineRelance;
   const prColor     = relanceDateColor(pr);
   const noStepsDone = STEP_ORDER.every((k) => !p.steps[k].done);
+
+  const [enrichData, setEnrichData] = useState<EnrichmentData | null>(() => getEnrichment(p.id));
+  const [scan, setScan] = useState<FieldScan>(null);
+
+  async function reScan(field: "website" | "instagram", value: string) {
+    if (!value.trim()) return;
+    setScan({ field, status: "scanning" });
+    try {
+      const res = await fetch("/api/enrich-prospect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          field === "website"
+            ? { brandName: p.marque, domain: value, instagramHandle: p.instagramHandle }
+            : { brandName: p.marque, domain: p.website, instagramHandle: value }
+        ),
+      });
+      if (!res.ok) throw new Error("Erreur serveur");
+      const d: EnrichmentData = await res.json();
+      saveEnrichment(p.id, d);
+      setEnrichData(d);
+      setScan({ field, status: "success" });
+      setTimeout(() => setScan(null), 2000);
+    } catch {
+      const msg = field === "website"
+        ? "Scan échoué — vérifier le domaine"
+        : "Scan échoué — vérifier le handle";
+      setScan({ field, status: "failed", error: msg });
+    }
+  }
+
+  function handleWebsiteSave(value: string) {
+    onSave("website", value);
+    reScan("website", value);
+  }
+
+  function handleInstagramSave(value: string) {
+    const clean = value.replace(/^@/, "");
+    onSave("instagramHandle", clean);
+    reScan("instagram", clean);
+  }
+
+  function ScanFeedback({ field }: { field: "website" | "instagram" }) {
+    if (!scan || scan.field !== field) return null;
+    if (scan.status === "scanning") return (
+      <p className="text-xs text-yellow-600 mt-1 flex items-center gap-1">
+        <span className="animate-spin inline-block">⟳</span> Analyse en cours…
+      </p>
+    );
+    if (scan.status === "success") return <p className="text-xs text-green-600 mt-1">✅ Mis à jour</p>;
+    return <p className="text-xs text-red-500 mt-1">⚠ {scan.error}</p>;
+  }
 
   return (
     <div className="p-5 space-y-5">
@@ -639,15 +711,65 @@ function InfosTab({
         <DField label="Gap CRM">
           <input key={p.id + "-g"} type="text" defaultValue={p.gapCrm} onBlur={(e) => onSave("gapCrm", e.target.value)} className={DI} placeholder="Réf." />
         </DField>
-        <DField label="Site web">
-          <input key={p.id + "-w"} type="text" defaultValue={p.website} onBlur={(e) => onSave("website", e.target.value)} className={DI} placeholder="ex: maison-dore.com" />
-        </DField>
-        <DField label="Instagram">
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm select-none">@</span>
-            <input key={p.id + "-ig"} type="text" defaultValue={p.instagramHandle} onBlur={(e) => onSave("instagramHandle", e.target.value.replace(/^@/, ""))} className={`${DI} pl-7`} placeholder="handle" />
-          </div>
-        </DField>
+        <div>
+          <DField
+            label={
+              <span className="flex items-center gap-1.5">
+                Site web
+                {scan?.field === "website" && scan.status === "scanning" && (
+                  <span className="text-yellow-500 animate-spin text-xs">⟳</span>
+                )}
+                {scan?.field === "website" && scan.status === "success" && (
+                  <span className="text-green-500 text-xs">✅</span>
+                )}
+              </span>
+            }
+          >
+            <input
+              key={p.id + "-w"}
+              type="text"
+              defaultValue={p.website}
+              onBlur={(e) => { const v = e.target.value.trim(); if (v !== p.website) handleWebsiteSave(v); else if (v) onSave("website", v); }}
+              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              className={DI}
+              placeholder="ex: maison-dore.com"
+            />
+          </DField>
+          {scan?.field === "website" && scan.status === "failed" && (
+            <p className="text-xs text-red-500 mt-1">⚠ {scan.error}</p>
+          )}
+        </div>
+        <div>
+          <DField
+            label={
+              <span className="flex items-center gap-1.5">
+                Instagram
+                {scan?.field === "instagram" && scan.status === "scanning" && (
+                  <span className="text-yellow-500 animate-spin text-xs">⟳</span>
+                )}
+                {scan?.field === "instagram" && scan.status === "success" && (
+                  <span className="text-green-500 text-xs">✅</span>
+                )}
+              </span>
+            }
+          >
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm select-none">@</span>
+              <input
+                key={p.id + "-ig"}
+                type="text"
+                defaultValue={p.instagramHandle}
+                onBlur={(e) => { const v = e.target.value.trim().replace(/^@/, ""); if (v !== p.instagramHandle) handleInstagramSave(v); else if (v) onSave("instagramHandle", v); }}
+                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                className={`${DI} pl-7`}
+                placeholder="handle"
+              />
+            </div>
+          </DField>
+          {scan?.field === "instagram" && scan.status === "failed" && (
+            <p className="text-xs text-red-500 mt-1">⚠ {scan.error}</p>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -693,7 +815,11 @@ function InfosTab({
         </label>
       </div>
 
-      <EnrichmentPanel prospect={p} />
+      <EnrichmentPanel prospect={p} externalData={enrichData} />
+
+      {onApplyContact && (
+        <ContactFinderPanel prospect={p} onApply={onApplyContact} />
+      )}
 
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Séquence de relance</p>
@@ -807,7 +933,7 @@ function EmailsTab({
         });
         if (!res.ok) {
           const d = await res.json();
-          throw new Error(d.error ?? "send_failed");
+          throw new Error(d.detail ?? d.error ?? "Erreur d'envoi Gmail");
         }
       } else {
         // Fallback: open mailto
@@ -900,7 +1026,17 @@ function EmailsTab({
           </p>
           <input type="text" placeholder="Objet" value={compose.subject} onChange={(e) => setCompose((d) => ({ ...d, subject: e.target.value }))} className={DI} />
           <textarea placeholder="Corps du message…" value={compose.body} onChange={(e) => setCompose((d) => ({ ...d, body: e.target.value }))} rows={5} className={`${DI} resize-none`} />
-          {sendError && <p className="text-xs text-red-600">{sendError}</p>}
+          {sendError && (
+            <div className="flex items-start justify-between gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <p className="text-xs text-red-600 flex-1">{sendError}</p>
+              <button
+                onClick={() => { setSendError(""); handleSend(); }}
+                className="text-xs font-medium text-red-600 hover:text-red-800 shrink-0 underline"
+              >
+                Réessayer
+              </button>
+            </div>
+          )}
           <div className="flex gap-2">
             <button onClick={handleSend} disabled={sending} className={`${DBTN1} disabled:opacity-60`}>
               {sending ? "Envoi…" : gmailStatus?.connected ? "Envoyer via Gmail →" : "Envoyer via messagerie →"}
@@ -1025,6 +1161,9 @@ export default function ProspectsTable() {
   const [enrichments, setEnrichments]     = useState<Record<string, EnrichmentData>>({});
   const [scanStatus, setScanStatus]       = useState<Record<string, ScanSt>>({});
   const [scanProgress, setScanProgress]   = useState<{ done: number; total: number } | null>(null);
+  const [toasts, setToasts]               = useState<Array<{ id: string; message: string }>>([]);
+  const [mounted, setMounted]             = useState(false);
+  useEffect(() => { setMounted(true); }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const searchParams = useSearchParams();
 
@@ -1038,6 +1177,40 @@ export default function ProspectsTable() {
   useEffect(() => {
     setEnrichments(getAllEnrichments());
   }, [prospects]);
+
+  // ── Toast ───────────────────────────────────────────────────────────────────
+
+  function showToast(message: string) {
+    const id = crypto.randomUUID();
+    setToasts((prev) => [...prev, { id, message }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+  }
+
+  // ── Background contact finder ────────────────────────────────────────────────
+
+  async function findContactBackground(p: Prospect, domain: string) {
+    if (!domain || p.foundersName) return;
+    try {
+      const res = await fetch("/api/find-contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.name) return;
+      const updated = withRelance({
+        ...p,
+        foundersName:       data.name,
+        foundersEmail:      data.email ?? "",
+        foundersSource:     data.source as FoundersSource,
+        foundersConfidence: data.confidence as FoundersConfidence,
+      });
+      updateProspect(updated);
+      reload();
+      showToast(`Contact trouvé pour ${p.marque} : ${data.name} 🎯`);
+    } catch {}
+  }
 
   // ── Enrichment functions ────────────────────────────────────────────────────
 
@@ -1067,6 +1240,12 @@ export default function ProspectsTable() {
 
       setEnrichments((prev) => ({ ...prev, [p.id]: d }));
       setScanStatus((prev) => ({ ...prev, [p.id]: "done" }));
+
+      // Auto-find contact if domain found and no founders data yet
+      const domain = d.websiteFound || updated.website;
+      if (domain && !updated.foundersName) {
+        findContactBackground(updated, domain).catch(() => {});
+      }
     } catch {
       setScanStatus((prev) => ({ ...prev, [p.id]: "failed" }));
     }
@@ -1149,6 +1328,7 @@ export default function ProspectsTable() {
       statut: "À contacter", notes: "", steps: emptySteps(),
       ouverturesMultiples: false, enConversation: false,
       dernierContact: null, relanceFaite: false,
+      foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
     });
     setNewRowId(np.id);
     // Auto-enrich in background (will be a no-op if marque is still empty)
@@ -1180,6 +1360,7 @@ export default function ProspectsTable() {
           gapCrm:          row["Gap CRM"] || "",
           website:         row["Website"] || "",
           instagramHandle: row["Instagram"] || "",
+          foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
           statut:     STATUTS.includes(rawStatut) ? rawStatut : "À contacter",
           notes:      row["Notes"] || "",
           steps:      emptySteps(),
@@ -1347,7 +1528,22 @@ export default function ProspectsTable() {
 
       {/* Drawer */}
       {drawerProspect && (
-        <ProspectDrawer prospect={drawerProspect} onClose={handleCloseDrawer} />
+        <ProspectDrawer prospect={drawerProspect} onClose={handleCloseDrawer} onContactFound={showToast} />
+      )}
+
+      {/* Toasts */}
+      {mounted && toasts.length > 0 && createPortal(
+        <div className="fixed bottom-5 right-5 space-y-2 z-[200] pointer-events-none">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className="bg-slate-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-2xl max-w-xs"
+            >
+              {t.message}
+            </div>
+          ))}
+        </div>,
+        document.body
       )}
     </>
   );
@@ -1372,10 +1568,12 @@ function Fld({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function DField({ label, children }: { label: string; children: React.ReactNode }) {
+function DField({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className="text-xs font-medium text-slate-500">{label}</span>
+      </div>
       {children}
     </div>
   );

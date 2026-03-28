@@ -173,6 +173,12 @@ export async function fetchMessages(
   return msgs.sort((a, b) => b.date.localeCompare(a.date));
 }
 
+function encodeSubject(subject: string): string {
+  // RFC 2047: encode if non-ASCII characters are present
+  if (/^[\x20-\x7E]*$/.test(subject)) return subject;
+  return `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`;
+}
+
 export async function sendMessage(
   accessToken: string,
   to: string,
@@ -186,7 +192,7 @@ export async function sendMessage(
   const raw = [
     `From: ${from}`,
     `To: ${to}`,
-    `Subject: ${subject}`,
+    `Subject: ${encodeSubject(subject)}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
     "",

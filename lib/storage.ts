@@ -37,6 +37,10 @@ function applyDefaults(raw: Record<string, unknown>): Prospect {
     prochaineRelance:    (raw.prochaineRelance as string | null) ?? null,
     relanceFaite:        (raw.relanceFaite as boolean)       ?? false,
     createdAt:           (raw.createdAt as string)           ?? new Date().toISOString(),
+    foundersName:        (raw.foundersName as string)        ?? "",
+    foundersEmail:       (raw.foundersEmail as string)       ?? "",
+    foundersSource:      (raw.foundersSource as Prospect["foundersSource"]) ?? "",
+    foundersConfidence:  (raw.foundersConfidence as Prospect["foundersConfidence"]) ?? "",
   };
 }
 
