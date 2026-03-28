@@ -201,3 +201,18 @@ export function getEnrichment(prospectId: string): EnrichmentData | null {
 export function saveEnrichment(prospectId: string, data: EnrichmentData): void {
   localStorage.setItem(ENRICHMENT_PREFIX + prospectId, JSON.stringify(data));
 }
+
+export function getAllEnrichments(): Record<string, EnrichmentData> {
+  if (typeof window === "undefined") return {};
+  const result: Record<string, EnrichmentData> = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(ENRICHMENT_PREFIX)) {
+        const raw = localStorage.getItem(key);
+        if (raw) result[key.slice(ENRICHMENT_PREFIX.length)] = JSON.parse(raw) as EnrichmentData;
+      }
+    }
+  } catch {}
+  return result;
+}

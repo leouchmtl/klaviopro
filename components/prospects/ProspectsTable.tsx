@@ -3,7 +3,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord } from "@/lib/types";
+import type { Prospect, Statut, Secteur, StepEntry, ProspectSteps, EmailRecord, EnrichmentData } from "@/lib/types";
 import { STATUTS, SECTEURS } from "@/lib/types";
 import {
   updateProspect,
@@ -12,6 +12,8 @@ import {
   getEmails,
   saveEmailRecord,
   deleteEmailRecord,
+  saveEnrichment,
+  getAllEnrichments,
 } from "@/lib/storage";
 import {
   formatDateFR,
@@ -229,6 +231,9 @@ function ProspectRow({
   onDelete,
   autoFocusField,
   onOpen,
+  enrichment,
+  scanStatus,
+  onEnrich,
 }: {
   prospect: Prospect;
   isSelected: boolean;
@@ -236,6 +241,9 @@ function ProspectRow({
   onDelete: (id: string) => void;
   autoFocusField?: string;
   onOpen: (id: string) => void;
+  enrichment: EnrichmentData | null;
+  scanStatus: ScanSt | undefined;
+  onEnrich: (p: Prospect) => void;
 }) {
   const [p, setP] = useState<Prospect>(init);
   useEffect(() => { setP(init); }, [init]);
@@ -306,6 +314,21 @@ function ProspectRow({
             </a>
           ) : undefined}
         />
+      </td>
+
+      {/* Shopify */}
+      <td className="px-2 py-1.5 text-center w-[52px]">
+        <EnrichCell enrichment={enrichment} scanStatus={scanStatus} type="shopify" onScan={() => onEnrich(p)} />
+      </td>
+
+      {/* Klaviyo */}
+      <td className="px-2 py-1.5 text-center w-[52px]">
+        <EnrichCell enrichment={enrichment} scanStatus={scanStatus} type="klaviyo" onScan={() => onEnrich(p)} />
+      </td>
+
+      {/* Instagram */}
+      <td className="px-2 py-1.5 w-[130px] max-w-[130px]">
+        <EnrichCell enrichment={enrichment} scanStatus={scanStatus} type="instagram" onScan={() => onEnrich(p)} />
       </td>
 
       {/* Gap CRM */}
@@ -392,13 +415,20 @@ interface Filters {
   statut: Statut | "Tous"; secteur: Secteur | "Tous";
   dcFrom: string; dcTo: string; prFrom: string; prTo: string;
   chaudsOnly: boolean;
+  shopifyOnly: boolean;
+  sansKlaviyoOnly: boolean;
 }
 const EMPTY_FILTERS: Filters = {
   statut: "Tous", secteur: "Tous",
-  dcFrom: "", dcTo: "", prFrom: "", prTo: "", chaudsOnly: false,
+  dcFrom: "", dcTo: "", prFrom: "", prTo: "",
+  chaudsOnly: false, shopifyOnly: false, sansKlaviyoOnly: false,
 };
 
-function applyFilters(prospects: Prospect[], f: Filters): Prospect[] {
+function applyFilters(
+  prospects: Prospect[],
+  f: Filters,
+  enrichments: Record<string, EnrichmentData>
+): Prospect[] {
   return prospects.filter((p) => {
     if (f.statut  !== "Tous" && p.statut  !== f.statut)  return false;
     if (f.secteur !== "Tous" && p.secteur !== f.secteur) return false;
@@ -407,8 +437,55 @@ function applyFilters(prospects: Prospect[], f: Filters): Prospect[] {
     if (f.prFrom && (p.prochaineRelance ?? "") < f.prFrom) return false;
     if (f.prTo   && (p.prochaineRelance ?? "") > f.prTo)   return false;
     if (f.chaudsOnly && !(p.ouverturesMultiples && p.enConversation)) return false;
+    if (f.shopifyOnly    && !enrichments[p.id]?.shopifyDetected)               return false;
+    if (f.sansKlaviyoOnly && enrichments[p.id]?.klaviyoDetected !== false)     return false;
     return true;
   });
+}
+
+// ── EnrichCell ─────────────────────────────────────────────────────────────────
+
+type ScanSt = "scanning" | "done" | "failed";
+
+function EnrichCell({
+  enrichment, scanStatus, type, onScan,
+}: {
+  enrichment: EnrichmentData | null;
+  scanStatus: ScanSt | undefined;
+  type: "shopify" | "klaviyo" | "instagram";
+  onScan: () => void;
+}) {
+  if (scanStatus === "scanning") {
+    return <span className="text-yellow-400 text-xs animate-spin inline-block">⟳</span>;
+  }
+  if (enrichment) {
+    if (type === "shopify") {
+      return <span className="text-sm" title={enrichment.platform}>{enrichment.shopifyDetected ? "🛍✅" : "🛍❌"}</span>;
+    }
+    if (type === "klaviyo") {
+      return <span className="text-sm" title={enrichment.klaviyo}>{enrichment.klaviyoDetected ? "⚡✅" : "⚡❌"}</span>;
+    }
+    // instagram
+    return enrichment.instagram && enrichment.instagram !== "Non disponible"
+      ? <span className="text-xs text-slate-600 truncate block max-w-[120px]" title={enrichment.instagram}>{enrichment.instagram}</span>
+      : <span className="text-slate-300 text-xs">—</span>;
+  }
+  if (scanStatus === "failed") {
+    return (
+      <button onClick={onScan} title="Réessayer" className="text-red-400 hover:text-red-500 text-xs font-bold">!</button>
+    );
+  }
+  // Not yet scanned
+  return (
+    <button
+      onClick={onScan}
+      title="Scanner"
+      className="group text-slate-200 hover:text-blue-400 transition-colors text-xs"
+    >
+      <span className="group-hover:hidden">●</span>
+      <span className="hidden group-hover:inline">⟳</span>
+    </button>
+  );
 }
 
 // ── Bulk bar ──────────────────────────────────────────────────────────────────
@@ -945,6 +1022,9 @@ export default function ProspectsTable() {
   const [selectedIds, setSelectedIds]     = useState<Set<string>>(new Set());
   const [newRowId, setNewRowId]           = useState<string | null>(null);
   const [drawerProspectId, setDrawerProspectId] = useState<string | null>(null);
+  const [enrichments, setEnrichments]     = useState<Record<string, EnrichmentData>>({});
+  const [scanStatus, setScanStatus]       = useState<Record<string, ScanSt>>({});
+  const [scanProgress, setScanProgress]   = useState<{ done: number; total: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const searchParams = useSearchParams();
 
@@ -954,19 +1034,73 @@ export default function ProspectsTable() {
     if (id) setDrawerProspectId(id);
   }, [searchParams]);
 
+  // Load enrichments from localStorage
+  useEffect(() => {
+    setEnrichments(getAllEnrichments());
+  }, [prospects]);
+
+  // ── Enrichment functions ────────────────────────────────────────────────────
+
+  async function enrichOne(p: Prospect): Promise<void> {
+    if (!p.marque.trim()) return;
+    setScanStatus((prev) => ({ ...prev, [p.id]: "scanning" }));
+    try {
+      const res = await fetch("/api/enrich-prospect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brandName: p.marque,
+          domain: p.website,
+          instagramHandle: p.instagramHandle,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      const d: EnrichmentData = await res.json();
+      saveEnrichment(p.id, d);
+
+      // Persist auto-found website / instagram back to prospect
+      let changed = false;
+      let updated = { ...p };
+      if (d.websiteFound && !p.website) { updated = { ...updated, website: d.websiteFound }; changed = true; }
+      if (d.instagramHandleFound && !p.instagramHandle) { updated = { ...updated, instagramHandle: d.instagramHandleFound }; changed = true; }
+      if (changed) { updateProspect(updated); reload(); }
+
+      setEnrichments((prev) => ({ ...prev, [p.id]: d }));
+      setScanStatus((prev) => ({ ...prev, [p.id]: "done" }));
+    } catch {
+      setScanStatus((prev) => ({ ...prev, [p.id]: "failed" }));
+    }
+  }
+
+  async function handleScanAll() {
+    const toScan = prospects.filter((p) => !enrichments[p.id] && p.marque.trim());
+    if (!toScan.length) return;
+    setScanProgress({ done: 0, total: toScan.length });
+    for (let i = 0; i < toScan.length; i++) {
+      await enrichOne(toScan[i]);
+      setScanProgress({ done: i + 1, total: toScan.length });
+    }
+    setScanProgress(null);
+  }
+
   function setFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((f) => ({ ...f, [key]: value }));
   }
 
-  const visible    = applyFilters(prospects, filters);
+  const visible    = applyFilters(prospects, filters, enrichments);
   const hasFilters = filters.statut !== "Tous" || filters.secteur !== "Tous" ||
-    filters.dcFrom || filters.dcTo || filters.prFrom || filters.prTo || filters.chaudsOnly;
+    filters.dcFrom || filters.dcTo || filters.prFrom || filters.prTo ||
+    filters.chaudsOnly || filters.shopifyOnly || filters.sansKlaviyoOnly;
 
   const drawerProspect = drawerProspectId
     ? (prospects.find((p) => p.id === drawerProspectId) ?? null)
     : null;
 
-  function handleCloseDrawer() { setDrawerProspectId(null); reload(); }
+  function handleCloseDrawer() {
+    setDrawerProspectId(null);
+    reload();
+    setEnrichments(getAllEnrichments());
+  }
 
   // ── Selection ──────────────────────────────────────────────────────────────
 
@@ -1017,6 +1151,8 @@ export default function ProspectsTable() {
       dernierContact: null, relanceFaite: false,
     });
     setNewRowId(np.id);
+    // Auto-enrich in background (will be a no-op if marque is still empty)
+    setTimeout(() => enrichOne(np), 2000);
   }
 
   function handleDelete(id: string) {
@@ -1097,6 +1233,18 @@ export default function ProspectsTable() {
               🔥 Chauds
             </label>
           </Fld>
+          <Fld label=" ">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 h-[30px]">
+              <input type="checkbox" checked={filters.shopifyOnly} onChange={(e) => setFilter("shopifyOnly", e.target.checked)} className="w-3.5 h-3.5 accent-blue-500" />
+              🛍 Shopify
+            </label>
+          </Fld>
+          <Fld label=" ">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 h-[30px]" title="Opportunités sans Klaviyo">
+              <input type="checkbox" checked={filters.sansKlaviyoOnly} onChange={(e) => setFilter("sansKlaviyoOnly", e.target.checked)} className="w-3.5 h-3.5 accent-purple-500" />
+              ⚡ Sans Klaviyo
+            </label>
+          </Fld>
           {hasFilters && (
             <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-xs text-slate-400 hover:text-red-500 underline self-end pb-0.5">
               Réinitialiser
@@ -1115,6 +1263,25 @@ export default function ProspectsTable() {
           {selectedIds.size > 0 && <span className="ml-2 text-blue-600">· {selectedIds.size} sélectionné{selectedIds.size > 1 ? "s" : ""}</span>}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {scanProgress ? (
+            <span className="text-xs text-slate-500">
+              Scan {scanProgress.done}/{scanProgress.total}…
+            </span>
+          ) : (
+            <button
+              onClick={handleScanAll}
+              disabled={!!scanProgress}
+              className={`${BTN2} flex items-center gap-1.5`}
+              title="Scanner tous les prospects sans données d'enrichissement"
+            >
+              ⟳ Tout scanner
+              {prospects.filter((p) => !enrichments[p.id] && p.marque.trim()).length > 0 && (
+                <span className="bg-slate-200 text-slate-600 text-xs rounded-full px-1.5 py-0.5">
+                  {prospects.filter((p) => !enrichments[p.id] && p.marque.trim()).length}
+                </span>
+              )}
+            </button>
+          )}
           <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleCSV} />
           <button onClick={() => fileRef.current?.click()} className={BTN2}>📂 CSV</button>
           <button onClick={downloadTemplate} className={BTN2}>⬇ Modèle</button>
@@ -1136,6 +1303,9 @@ export default function ProspectsTable() {
                 <TH>Secteur</TH>
                 <TH>Contact</TH>
                 <TH>Email</TH>
+                <TH center title="Shopify">🛍</TH>
+                <TH center title="Klaviyo">⚡</TH>
+                <TH>Instagram</TH>
                 <TH>Gap CRM</TH>
                 <TH>Statut</TH>
                 <TH>Notes</TH>
@@ -1150,7 +1320,7 @@ export default function ProspectsTable() {
             <tbody>
               {visible.length === 0 ? (
                 <tr>
-                  <td colSpan={15} className="px-4 py-10 text-center text-slate-400 text-sm">
+                  <td colSpan={18} className="px-4 py-10 text-center text-slate-400 text-sm">
                     {hasFilters ? "Aucun prospect ne correspond aux filtres." : "Aucun prospect. Cliquez sur « + Ajouter » ou importez un CSV."}
                   </td>
                 </tr>
@@ -1164,6 +1334,9 @@ export default function ProspectsTable() {
                     onDelete={handleDelete}
                     autoFocusField={p.id === newRowId ? "marque" : undefined}
                     onOpen={setDrawerProspectId}
+                    enrichment={enrichments[p.id] ?? null}
+                    scanStatus={scanStatus[p.id]}
+                    onEnrich={(p) => enrichOne(p)}
                   />
                 ))
               )}

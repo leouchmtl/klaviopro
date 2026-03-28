@@ -60,12 +60,15 @@ export interface Prospect {
 }
 
 export interface EnrichmentData {
-  platform: string;          // "Shopify ✅" | "Autre plateforme"
-  klaviyo: string;           // "Klaviyo ✅" | "Pas de Klaviyo ❌"
+  platform: string;              // "Shopify ✅" | "Autre plateforme"
+  klaviyo: string;               // "Klaviyo ✅" | "Pas de Klaviyo ❌"
   klaviyoDetected: boolean;
+  shopifyDetected: boolean;
   description: string;
-  instagram: string;         // "@handle · X abonnés" | "Non disponible"
-  updatedAt: string;         // ISO date
+  instagram: string;             // "@handle · X abonnés" | "Non disponible"
+  updatedAt: string;             // ISO date
+  websiteFound?: string;         // auto-found domain (to persist back to prospect)
+  instagramHandleFound?: string; // auto-found handle
 }
 
 export interface KPIMonth {
