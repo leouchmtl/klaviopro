@@ -1,5 +1,59 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// ── Shared browser headers ─────────────────────────────────────────────────────
+
+const BROWSER_HEADERS = {
+  "User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language":  "fr-FR,fr;q=0.9,en;q=0.8",
+  "Accept-Encoding":  "gzip, deflate, br",
+  "Cache-Control":    "no-cache",
+  "Pragma":           "no-cache",
+};
+
+// ── Error classification ───────────────────────────────────────────────────────
+
+function classifyError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("CERT") || msg.includes("SSL") || msg.includes("certificate") || msg.includes("self_signed"))
+    return "Erreur certificat SSL";
+  if (msg.includes("ENOTFOUND") || msg.includes("getaddrinfo") || msg.includes("EAI_AGAIN"))
+    return "Domaine introuvable";
+  if (msg.includes("TimeoutError") || msg.includes("AbortError") || msg.includes("timeout") || msg.includes("UND_ERR_CONNECT_TIMEOUT"))
+    return "Site trop lent (timeout)";
+  return `Erreur: ${msg.slice(0, 80)}`;
+}
+
+// ── Homepage fetch with fallbacks ─────────────────────────────────────────────
+
+async function fetchHomepage(domain: string): Promise<{ html: string; error: string }> {
+  const urls = [
+    `https://${domain}`,
+    `https://www.${domain}`,
+    `http://${domain}`,
+  ];
+  let lastError = "";
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: BROWSER_HEADERS,
+        signal: AbortSignal.timeout(10000),
+        redirect: "follow",
+      });
+      if (res.status === 403 || res.status === 401) {
+        lastError = "Site protégé contre le scan";
+        continue;
+      }
+      if (res.ok) return { html: await res.text(), error: "" };
+      lastError = `Erreur: HTTP ${res.status}`;
+    } catch (err) {
+      lastError = classifyError(err);
+      if (lastError === "Domaine introuvable") break;
+    }
+  }
+  return { html: "", error: lastError };
+}
+
 // ── HTML helpers ──────────────────────────────────────────────────────────────
 
 function extractMeta(html: string, name: string): string {
@@ -34,10 +88,7 @@ async function ddgSearch(query: string): Promise<string> {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=fr-fr`;
     const res = await fetch(url, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        ...BROWSER_HEADERS,
         Referer: "https://duckduckgo.com/",
       },
       signal: AbortSignal.timeout(9000),
@@ -79,6 +130,7 @@ async function probeUrl(url: string): Promise<string> {
   try {
     const r = await fetch(url, {
       method: "HEAD",
+      headers: BROWSER_HEADERS,
       signal: AbortSignal.timeout(4000),
       redirect: "follow",
     });
@@ -93,7 +145,6 @@ async function autoFindWebsite(brandName: string): Promise<string> {
   const slug = normalize(brandName);
   if (!slug) return "";
 
-  // 1. Guess common domains (fast)
   const candidates = [
     `https://${slug}.com`,
     `https://${slug}.fr`,
@@ -106,7 +157,6 @@ async function autoFindWebsite(brandName: string): Promise<string> {
     if (found) return found;
   }
 
-  // 2. DuckDuckGo fallback
   const html = await ddgSearch(`"${brandName}" boutique officielle -site:instagram.com -site:facebook.com`);
   for (const url of decodeUddg(html)) {
     try {
@@ -125,12 +175,10 @@ async function autoFindInstagram(brandName: string): Promise<string> {
   const html = await ddgSearch(`"${brandName}" site:instagram.com`);
   if (!html) return "";
 
-  // Prefer decoded UDDG URLs (most reliable)
   for (const url of decodeUddg(html)) {
     const m = url.match(/instagram\.com\/([A-Za-z0-9_.]{2,40})\/?(?:$|\?)/);
     if (m && !IG_SKIP.includes(m[1].toLowerCase())) return m[1];
   }
-  // Fallback: scan raw HTML for instagram.com/handle patterns
   let igm: RegExpExecArray | null;
   const igRe = /instagram\.com\/([A-Za-z0-9_.]{2,40})(?:\/|"|'|\s|&)/g;
   while ((igm = igRe.exec(html)) !== null) {
@@ -146,9 +194,8 @@ async function fetchInstagramFollowers(handle: string): Promise<string> {
   try {
     const res = await fetch(`https://www.instagram.com/${handle}/`, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-        Accept: "text/html,application/xhtml+xml",
+        "User-Agent":  "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "Accept":      "text/html,application/xhtml+xml",
         "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
       },
       signal: AbortSignal.timeout(7000),
@@ -186,7 +233,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "at least one param required" }, { status: 400 });
   }
 
-  // Basic SSRF guard
   function isSafeHost(host: string): boolean {
     return (
       host !== "localhost" &&
@@ -217,35 +263,26 @@ export async function POST(req: NextRequest) {
     instagramHandleFound = autoHandle;
   }
 
-  // ── Fetch homepage ─────────────────────────────────────────────────────────
+  // ── Fetch homepage with fallbacks ──────────────────────────────────────────
 
   let html = "";
+  let scanError = "";
+
   if (domain) {
-    let url = domain.startsWith("http") ? domain : `https://${domain}`;
+    // Strip scheme if user pasted a full URL
+    const rawDomain = domain.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
     try {
-      const parsed = new URL(url);
+      const parsed = new URL(`https://${rawDomain}`);
       if (!isSafeHost(parsed.hostname)) {
         return NextResponse.json({ error: "invalid_domain" }, { status: 400 });
       }
-      url = parsed.toString();
     } catch {
       return NextResponse.json({ error: "invalid_domain" }, { status: 400 });
     }
-    try {
-      const res = await fetch(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml",
-          "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-        },
-        signal: AbortSignal.timeout(10000),
-        redirect: "follow",
-      });
-      if (res.ok) html = await res.text();
-    } catch {
-      // non-fatal: continue with empty html
-    }
+
+    const result = await fetchHomepage(rawDomain);
+    html = result.html;
+    scanError = result.error;
   }
 
   const shopify = detectShopify(html);
@@ -254,15 +291,23 @@ export async function POST(req: NextRequest) {
 
   const instagram = await fetchInstagramFollowers(instagramHandle);
 
+  // Partial success: if homepage blocked but other data was found, return what we have
+  const homepageBlocked = !html && !!scanError;
+
   return NextResponse.json({
-    platform: domain ? (shopify ? "Shopify ✅" : "Autre plateforme") : "Non analysé",
-    klaviyo:  domain ? (klaviyo ? "Klaviyo ✅" : "Pas de Klaviyo ❌") : "Non analysé",
+    platform:        domain
+      ? (homepageBlocked ? "Non scannable" : shopify ? "Shopify ✅" : "Autre plateforme")
+      : "Non analysé",
+    klaviyo:         domain
+      ? (homepageBlocked ? "Non scannable" : klaviyo ? "Klaviyo ✅" : "Pas de Klaviyo ❌")
+      : "Non analysé",
     klaviyoDetected: klaviyo,
     shopifyDetected: shopify,
     description,
     instagram,
-    updatedAt: new Date().toISOString(),
+    updatedAt:       new Date().toISOString(),
     websiteFound,
     instagramHandleFound,
+    ...(scanError ? { scanError } : {}),
   });
 }

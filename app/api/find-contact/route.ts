@@ -12,13 +12,19 @@ interface ContactResult {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-const BROWSER_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+const BROWSER_HEADERS = {
+  "User-Agent":      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Cache-Control":   "no-cache",
+  "Pragma":          "no-cache",
+};
 
 async function fetchHtml(url: string, timeoutMs = 8000): Promise<string> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": BROWSER_UA, Accept: "text/html", "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8" },
+      headers: BROWSER_HEADERS,
       signal: AbortSignal.timeout(timeoutMs),
       redirect: "follow",
     });
@@ -80,17 +86,19 @@ const ML_PATTERNS = [
   /(?:Propriétaire|Éditeur)[^:\n]{0,20}:\s*(.{5,50})/i,
 ];
 
-async function findFromMentionsLegales(base: string): Promise<ContactResult | null> {
-  for (const path of ML_PATHS) {
-    const html = await fetchHtml(base + path, 6000);
-    if (!html) continue;
-    const text = htmlToText(html);
-    for (const pattern of ML_PATTERNS) {
-      const m = text.match(pattern);
-      if (m) {
-        const raw = m[1].trim().split(/[\n|,]/)[0].trim();
-        const name = extractName(raw);
-        if (name) return { name, email: "", source: "mentions_légales", confidence: "élevée" };
+async function findFromMentionsLegales(bases: string[]): Promise<ContactResult | null> {
+  for (const base of bases) {
+    for (const path of ML_PATHS) {
+      const html = await fetchHtml(base + path, 6000);
+      if (!html) continue;
+      const text = htmlToText(html);
+      for (const pattern of ML_PATTERNS) {
+        const m = text.match(pattern);
+        if (m) {
+          const raw = m[1].trim().split(/[\n|,]/)[0].trim();
+          const name = extractName(raw);
+          if (name) return { name, email: "", source: "mentions_légales", confidence: "élevée" };
+        }
       }
     }
   }
@@ -113,21 +121,23 @@ const ABOUT_PATHS = [
 const FOUNDER_KWS =
   /fondatric|fondateur|fonder|CEO|Directeur(?:\s+général)?|DG|créatric|créateur|président(?:e)?|co.?founder|cofondateur/i;
 
-async function findFromAboutPage(base: string): Promise<ContactResult | null> {
-  for (const path of ABOUT_PATHS) {
-    const html = await fetchHtml(base + path, 6000);
-    if (!html) continue;
-    const text = htmlToText(html);
+async function findFromAboutPage(bases: string[]): Promise<ContactResult | null> {
+  for (const base of bases) {
+    for (const path of ABOUT_PATHS) {
+      const html = await fetchHtml(base + path, 6000);
+      if (!html) continue;
+      const text = htmlToText(html);
 
-    // Search in 250-char windows around founder keywords
-    let m: RegExpExecArray | null;
-    const kwRe = new RegExp(FOUNDER_KWS.source, "gi");
-    while ((m = kwRe.exec(text)) !== null) {
-      const start = Math.max(0, m.index - 120);
-      const end = Math.min(text.length, m.index + 250);
-      const window = text.slice(start, end);
-      const name = extractName(window);
-      if (name) return { name, email: "", source: "about_page", confidence: "moyenne" };
+      // Search in 250-char windows around founder keywords
+      let m: RegExpExecArray | null;
+      const kwRe = new RegExp(FOUNDER_KWS.source, "gi");
+      while ((m = kwRe.exec(text)) !== null) {
+        const start = Math.max(0, m.index - 120);
+        const end = Math.min(text.length, m.index + 250);
+        const window = text.slice(start, end);
+        const name = extractName(window);
+        if (name) return { name, email: "", source: "about_page", confidence: "moyenne" };
+      }
     }
   }
   return null;
@@ -220,12 +230,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "domain required" }, { status: 400 });
   }
 
-  const base = `https://${domain}`;
+  // Try both https://domain and https://www.domain for scraping steps
+  const bases = [`https://${domain}`, `https://www.${domain}`];
 
   // Run steps in order, stop at first success
   const steps = [
-    () => findFromMentionsLegales(base),
-    () => findFromAboutPage(base),
+    () => findFromMentionsLegales(bases),
+    () => findFromAboutPage(bases),
     () => findFromHunter(domain),
     () => findFromApollo(domain),
   ];
