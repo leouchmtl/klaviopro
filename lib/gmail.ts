@@ -85,14 +85,24 @@ async function gFetch(path: string, accessToken: string, opts?: RequestInit) {
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
+export type MatchType = "direct" | "domain" | "contact" | "brand";
+
+const FREE_EMAIL_PROVIDERS = new Set([
+  "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
+  "orange.fr", "free.fr", "sfr.fr", "laposte.net", "icloud.com",
+  "protonmail.com", "mail.com", "yahoo.fr",
+]);
+
 export interface GmailMsg {
   id:        string;
+  threadId:  string;
   date:      string;       // YYYY-MM-DD
   subject:   string;
   from:      string;
   snippet:   string;
   body:      string;       // decoded plain-text body
   direction: "envoyé" | "reçu";
+  matchType: MatchType;
 }
 
 function hdr(headers: { name: string; value: string }[], name: string) {
@@ -137,35 +147,73 @@ function toDateStr(s: string): string {
 
 export async function fetchMessages(
   accessToken: string,
-  prospectEmail: string,
-  maxResults = 20
+  params: { prospectEmail: string; brandName?: string; contactName?: string },
+  maxResults = 25
 ): Promise<GmailMsg[]> {
-  const q = `from:${prospectEmail} OR to:${prospectEmail}`;
-  const list = await gFetch(
-    `/users/me/messages?q=${encodeURIComponent(q)}&maxResults=${maxResults}`,
-    accessToken
-  );
-  if (!list.messages?.length) return [];
+  const { prospectEmail, brandName, contactName } = params;
 
-  const msgs: GmailMsg[] = await Promise.all(
-    (list.messages as { id: string }[]).map(async ({ id }) => {
-      const msg = await gFetch(
-        `/users/me/messages/${id}?format=full`,
+  // Build queries per match type (highest priority first)
+  const queries: Array<{ q: string; matchType: MatchType }> = [];
+
+  if (prospectEmail) {
+    queries.push({ q: `from:${prospectEmail} OR to:${prospectEmail}`, matchType: "direct" });
+
+    const domain = prospectEmail.split("@")[1]?.toLowerCase();
+    if (domain && !FREE_EMAIL_PROVIDERS.has(domain)) {
+      queries.push({ q: `from:@${domain} OR to:@${domain}`, matchType: "domain" });
+    }
+  }
+  if (contactName && contactName.trim().length > 2) {
+    queries.push({ q: `"${contactName.trim()}"`, matchType: "contact" });
+  }
+  if (brandName && brandName.trim().length > 1) {
+    queries.push({ q: `"${brandName.trim()}"`, matchType: "brand" });
+  }
+
+  // Run all list queries in parallel
+  const PRIORITY: Record<MatchType, number> = { direct: 0, domain: 1, contact: 2, brand: 3 };
+  const idToMatchType = new Map<string, MatchType>();
+
+  const listResults = await Promise.allSettled(
+    queries.map(async ({ q, matchType }) => {
+      const list = await gFetch(
+        `/users/me/messages?q=${encodeURIComponent(q)}&maxResults=${maxResults}`,
         accessToken
       );
+      return { ids: (list.messages ?? []) as { id: string }[], matchType };
+    })
+  );
+
+  for (const r of listResults) {
+    if (r.status !== "fulfilled") continue;
+    for (const { id } of r.value.ids) {
+      const existing = idToMatchType.get(id);
+      if (!existing || PRIORITY[r.value.matchType] < PRIORITY[existing]) {
+        idToMatchType.set(id, r.value.matchType);
+      }
+    }
+  }
+
+  if (idToMatchType.size === 0) return [];
+
+  // Fetch full messages in parallel
+  const msgs: GmailMsg[] = await Promise.all(
+    Array.from(idToMatchType.entries()).map(async ([id, matchType]) => {
+      const msg = await gFetch(`/users/me/messages/${id}?format=full`, accessToken);
       const h: { name: string; value: string }[] = msg.payload?.headers ?? [];
       const from = hdr(h, "From");
       const body = extractBody(msg.payload ?? {});
+      const labelIds: string[] = msg.labelIds ?? [];
       return {
         id,
+        threadId:  (msg.threadId as string) ?? "",
         date:      toDateStr(hdr(h, "Date")),
         subject:   hdr(h, "Subject"),
         from,
         snippet:   (msg.snippet as string) ?? "",
-        body:      body.slice(0, 4000), // cap to avoid huge payloads
-        direction: from.toLowerCase().includes(prospectEmail.toLowerCase())
-          ? ("reçu" as const)
-          : ("envoyé" as const),
+        body:      body.slice(0, 4000),
+        direction: labelIds.includes("SENT") ? ("envoyé" as const) : ("reçu" as const),
+        matchType,
       };
     })
   );

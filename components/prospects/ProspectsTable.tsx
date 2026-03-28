@@ -28,7 +28,7 @@ import {
   applyStepChange,
 } from "@/lib/utils";
 import { useProspects } from "@/lib/hooks";
-import type { GmailMsg } from "@/lib/gmail";
+import type { GmailMsg, MatchType } from "@/lib/gmail";
 import ColdEmailTab from "@/components/prospects/ColdEmailTab";
 import EnrichmentPanel from "@/components/prospects/EnrichmentPanel";
 import ContactFinderPanel from "@/components/prospects/ContactFinderPanel";
@@ -881,6 +881,7 @@ function EmailsTab({
   const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null);
   const [gmailMsgs, setGmailMsgs]     = useState<GmailMsg[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
+  const [emailFilter, setEmailFilter] = useState<"tous" | "envoyés" | "reçus">("tous");
   const [sending, setSending]         = useState(false);
   const [sendError, setSendError]     = useState("");
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
@@ -905,7 +906,11 @@ function EmailsTab({
   function fetchGmailThreads() {
     if (!gmailStatus?.connected || !prospect.email) return;
     setGmailLoading(true);
-    fetch(`/api/gmail/threads?email=${encodeURIComponent(prospect.email)}`)
+    const params = new URLSearchParams({ email: prospect.email });
+    if (prospect.marque) params.set("brand", prospect.marque);
+    if (prospect.foundersName) params.set("contact", prospect.foundersName);
+    else if (prospect.contact) params.set("contact", prospect.contact);
+    fetch(`/api/gmail/threads?${params}`)
       .then((r) => r.json())
       .then((d) => {
         const msgs: GmailMsg[] = d.messages ?? [];
@@ -975,10 +980,13 @@ function EmailsTab({
   }
 
   // Merge Gmail + localStorage
-  const allEmails: Array<{ key: string; date: string; subject: string; snippet: string; body: string; direction: "envoyé" | "reçu"; source: "gmail" | "local" }> = [
-    ...gmailMsgs.map((m) => ({ key: "g_" + m.id, date: m.date, subject: m.subject, snippet: m.snippet, body: m.body, direction: m.direction, source: "gmail" as const })),
+  const allEmails: Array<{ key: string; date: string; subject: string; snippet: string; body: string; direction: "envoyé" | "reçu"; source: "gmail" | "local"; matchType?: MatchType }> = [
+    ...gmailMsgs.map((m) => ({ key: "g_" + m.id, date: m.date, subject: m.subject, snippet: m.snippet, body: m.body, direction: m.direction, source: "gmail" as const, matchType: m.matchType })),
     ...emails.map((e)   => ({ key: "l_" + e.id,  date: e.date, subject: e.subject, snippet: e.body,    body: e.body, direction: e.direction, source: "local" as const })),
   ].sort((a, b) => b.date.localeCompare(a.date));
+
+  const filteredEmails = emailFilter === "tous" ? allEmails
+    : allEmails.filter((e) => e.direction === (emailFilter === "envoyés" ? "envoyé" : "reçu"));
 
   return (
     <div className="p-5 space-y-4">
@@ -1078,8 +1086,8 @@ function EmailsTab({
         <p className="text-xs text-slate-400 text-center py-4">Renseignez l&apos;email du prospect pour voir ses échanges.</p>
       )}
 
-      {!gmailLoading && gmailStatus?.connected && prospect.email && allEmails.filter(e => e.source === "gmail").length === 0 && gmailMsgs !== undefined && (
-        <p className="text-sm text-slate-400 text-center py-4">Aucun échange Gmail trouvé avec ce contact.</p>
+      {!gmailLoading && gmailStatus?.connected && prospect.email && allEmails.filter(e => e.source === "gmail").length === 0 && (
+        <p className="text-sm text-slate-400 text-center py-4">Aucun échange trouvé avec cette marque ou ce contact.</p>
       )}
 
       {!gmailLoading && allEmails.length === 0 && !gmailStatus?.connected && (
@@ -1087,64 +1095,98 @@ function EmailsTab({
       )}
 
       {!gmailLoading && allEmails.length > 0 && (
-        <div className="space-y-2">
-          {allEmails.map((email) => {
-            const isExpanded = expandedKeys.has(email.key);
-            const hasBody = email.body && email.body.trim().length > 0;
-            return (
-              <div
-                key={email.key}
-                className={`rounded-xl border ${
-                  email.direction === "envoyé" ? "border-blue-100 bg-blue-50" : "border-green-100 bg-green-50"
-                }`}
-              >
-                <div className="p-3">
-                  <div className="flex items-start gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                          email.direction === "envoyé" ? "bg-blue-200 text-blue-800" : "bg-green-200 text-green-800"
-                        }`}>
-                          {email.direction === "envoyé" ? "Envoyé →" : "← Reçu"}
-                        </span>
-                        <span className="text-xs text-slate-500">{formatDateLong(email.date)}</span>
-                        {email.source === "gmail" && <span className="text-xs text-slate-400">· Gmail</span>}
+        <>
+          {/* Filter bar + count */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex gap-1">
+              {(["tous", "envoyés", "reçus"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setEmailFilter(f)}
+                  className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors capitalize ${
+                    emailFilter === f
+                      ? "bg-slate-800 text-white"
+                      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                  }`}
+                >
+                  {f.charAt(0).toUpperCase() + f.slice(1)}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-slate-400">
+              {filteredEmails.length} échange{filteredEmails.length > 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {filteredEmails.map((email) => {
+              const isExpanded = expandedKeys.has(email.key);
+              const hasBody = email.body && email.body.trim().length > 0;
+              const matchBadge = email.source === "gmail" && email.matchType ? {
+                direct:  { label: "Email direct",  cls: "bg-blue-100 text-blue-700" },
+                domain:  { label: "Même domaine",  cls: "bg-purple-100 text-purple-700" },
+                contact: { label: "Nom contact",   cls: "bg-orange-100 text-orange-700" },
+                brand:   { label: "Nom marque",    cls: "bg-slate-100 text-slate-600" },
+              }[email.matchType] : null;
+              return (
+                <div
+                  key={email.key}
+                  className={`rounded-xl border ${
+                    email.direction === "envoyé" ? "border-blue-100 bg-blue-50" : "border-green-100 bg-green-50"
+                  }`}
+                >
+                  <div className="p-3">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                            email.direction === "envoyé" ? "bg-blue-200 text-blue-800" : "bg-green-200 text-green-800"
+                          }`}>
+                            {email.direction === "envoyé" ? "Envoyé →" : "← Reçu"}
+                          </span>
+                          <span className="text-xs text-slate-500">{formatDateLong(email.date)}</span>
+                          {matchBadge && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${matchBadge.cls}`}>
+                              {matchBadge.label}
+                            </span>
+                          )}
+                        </div>
+                        {email.subject && (
+                          <p className="text-sm font-semibold text-slate-800 mb-1">{email.subject}</p>
+                        )}
+                        {!isExpanded && email.snippet && (
+                          <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{email.snippet}</p>
+                        )}
+                        {isExpanded && hasBody && (
+                          <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed mt-1 max-h-64 overflow-y-auto">{email.body}</pre>
+                        )}
                       </div>
-                      {email.subject && (
-                        <p className="text-sm font-semibold text-slate-800 mb-1">{email.subject}</p>
-                      )}
-                      {!isExpanded && email.snippet && (
-                        <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{email.snippet}</p>
-                      )}
-                      {isExpanded && hasBody && (
-                        <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed mt-1 max-h-64 overflow-y-auto">{email.body}</pre>
+                      {email.source === "local" && (
+                        <button
+                          onClick={() => { deleteEmailRecord(prospect.id, email.key.slice(2)); onRefresh(); }}
+                          className="text-slate-300 hover:text-red-400 text-lg leading-none shrink-0"
+                          title="Supprimer"
+                        >×</button>
                       )}
                     </div>
-                    {email.source === "local" && (
+                    {hasBody && (
                       <button
-                        onClick={() => { deleteEmailRecord(prospect.id, email.key.slice(2)); onRefresh(); }}
-                        className="text-slate-300 hover:text-red-400 text-lg leading-none shrink-0"
-                        title="Supprimer"
-                      >×</button>
+                        onClick={() => setExpandedKeys((prev) => {
+                          const n = new Set(prev);
+                          n.has(email.key) ? n.delete(email.key) : n.add(email.key);
+                          return n;
+                        })}
+                        className="mt-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        {isExpanded ? "▲ Réduire" : "▼ Voir le message complet"}
+                      </button>
                     )}
                   </div>
-                  {hasBody && (
-                    <button
-                      onClick={() => setExpandedKeys((prev) => {
-                        const n = new Set(prev);
-                        n.has(email.key) ? n.delete(email.key) : n.add(email.key);
-                        return n;
-                      })}
-                      className="mt-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
-                    >
-                      {isExpanded ? "▲ Réduire" : "▼ Voir le message complet"}
-                    </button>
-                  )}
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
