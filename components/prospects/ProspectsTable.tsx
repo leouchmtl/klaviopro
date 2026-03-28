@@ -380,8 +380,8 @@ function ProspectRow({
     updateProspect(saved);
   }
 
-  const chaud       = p.ouverturesMultiples && p.enConversation;
-  const { solidBg } = STATUT_COLORS[p.statut];
+  const chaud          = p.ouverturesMultiples && p.enConversation;
+  const { bg, text } = STATUT_COLORS[p.statut];
   const pr          = p.prochaineRelance;
   const prColor     = relanceDateColor(pr);
   const noStepsDone = STEP_ORDER.every((k) => !p.steps[k].done);
@@ -469,7 +469,7 @@ function ProspectRow({
       <td key="statut" className="px-2 py-1.5 min-w-[125px]">
         <SelectCell
           value={p.statut} options={STATUTS} onSave={(v) => save("statut", v as Statut)}
-          display={<span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white ${solidBg}`}>{p.statut}</span>}
+          display={<span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${bg} ${text}`}>{p.statut}</span>}
         />
       </td>
     ),
@@ -530,12 +530,12 @@ function ProspectRow({
   return (
     <tr className={`border-b border-slate-100 transition-colors ${chaud ? "bg-amber-50/60 hover:bg-amber-100/50" : "hover:bg-slate-50/60"}`}>
       {/* Select (fixed) */}
-      <td className="px-2 py-1.5 text-center w-8 sticky left-0 z-[5] bg-inherit">
+      <td className={`px-2 py-1.5 text-center w-8 sticky left-0 z-[5] ${chaud ? "bg-amber-50" : "bg-white"}`}>
         <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(p.id)} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
       </td>
 
       {/* Marque (frozen) */}
-      <td className="px-2 py-1.5 font-medium text-slate-900 w-[170px] max-w-[170px] sticky left-8 z-[5] bg-inherit shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+      <td className={`px-2 py-1.5 font-medium text-slate-900 w-[170px] max-w-[170px] sticky left-8 z-[5] ${chaud ? "bg-amber-50" : "bg-white"} shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]`}>
         <EditableCell value={p.marque} onSave={(v) => save("marque", v)} placeholder="Marque" maxWidth="160px" autoFocus={autoFocusField === "marque"} />
       </td>
 
@@ -835,6 +835,30 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
     if (!p.enConversation) save("enConversation", true);
   }
 
+  async function handleRefreshCA() {
+    if (!p.marque && !p.website) return;
+    try {
+      const res = await fetch("/api/enrich-prospect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brandName: p.marque, domain: p.website, instagramHandle: p.instagramHandle }),
+      });
+      if (!res.ok) return;
+      const d = await res.json() as { annualRevenue?: number | null; revenueSource?: string; revenueYear?: string; revenueRaw?: string };
+      if (d.annualRevenue != null) {
+        const updated = withRelance({
+          ...p,
+          annualRevenue: d.annualRevenue,
+          revenueSource: (d.revenueSource ?? "") as Prospect["revenueSource"],
+          revenueYear:   d.revenueYear ?? "",
+          revenueRaw:    d.revenueRaw  ?? "",
+        });
+        setP(updated);
+        updateProspect(updated);
+      }
+    } catch {}
+  }
+
   function handleApplyContact(result: { name: string; email: string; source: FoundersSource; confidence: FoundersConfidence }) {
     const updated = withRelance({
       ...p,
@@ -878,7 +902,7 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
 
         <div className="flex-1 overflow-y-auto">
           {tab === "infos"
-            ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} onApplyContact={handleApplyContact} />
+            ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} onApplyContact={handleApplyContact} onRefreshCA={handleRefreshCA} />
             : tab === "emails"
             ? <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} initialCompose={coldCompose} onConsumeCompose={() => setColdCompose(null)} />
             : <ColdEmailTab prospect={p} onSendViaGmail={handleSendViaGmail} />}
@@ -893,12 +917,13 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
 type FieldScan = { field: "website" | "instagram"; status: "scanning" | "success" | "failed"; error?: string } | null;
 
 function InfosTab({
-  p, onSave, onSaveStep, onApplyContact,
+  p, onSave, onSaveStep, onApplyContact, onRefreshCA,
 }: {
   p: Prospect;
   onSave: <K extends keyof Prospect>(f: K, v: Prospect[K]) => void;
   onSaveStep: (k: keyof ProspectSteps, e: StepEntry) => void;
   onApplyContact?: (result: { name: string; email: string; source: FoundersSource; confidence: FoundersConfidence }) => void;
+  onRefreshCA?: () => Promise<void>;
 }) {
   const pr          = p.prochaineRelance;
   const prColor     = relanceDateColor(pr);
@@ -906,6 +931,17 @@ function InfosTab({
 
   const [enrichData, setEnrichData] = useState<EnrichmentData | null>(() => getEnrichment(p.id));
   const [scan, setScan] = useState<FieldScan>(null);
+  const [caRefreshing, setCaRefreshing] = useState(false);
+  const [caRefreshed, setCaRefreshed] = useState(false);
+
+  async function handleRefreshCA() {
+    if (!onRefreshCA) return;
+    setCaRefreshing(true);
+    await onRefreshCA();
+    setCaRefreshing(false);
+    setCaRefreshed(true);
+    setTimeout(() => setCaRefreshed(false), 2000);
+  }
 
   async function reScan(field: "website" | "instagram", value: string) {
     if (!value.trim()) return;
@@ -1078,6 +1114,33 @@ function InfosTab({
           En conversation
         </label>
       </div>
+
+      {onRefreshCA && (
+        <div className="flex items-center gap-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex-1">
+            CA
+            {p.annualRevenue != null && (
+              <span className="ml-2 font-normal normal-case text-slate-600">
+                {p.annualRevenue >= 1_000_000
+                  ? `${(p.annualRevenue / 1_000_000).toFixed(1).replace(".", ",")} M€`
+                  : `${(p.annualRevenue / 1_000).toFixed(0)} K€`}
+                {p.revenueSource && (
+                  <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${p.revenueSource === "estimé" ? "bg-slate-100 text-slate-400" : "bg-emerald-50 text-emerald-600"}`}>
+                    {p.revenueSource === "estimé" ? "estimé" : p.revenueSource}
+                  </span>
+                )}
+              </span>
+            )}
+          </p>
+          <button
+            onClick={handleRefreshCA}
+            disabled={caRefreshing}
+            className="text-xs px-2.5 py-1.5 border border-slate-300 hover:border-slate-400 text-slate-600 hover:text-slate-800 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {caRefreshing ? <span className="animate-spin inline-block">⟳</span> : caRefreshed ? "✓ Mis à jour" : "↻ Actualiser le CA"}
+          </button>
+        </div>
+      )}
 
       <EnrichmentPanel prospect={p} externalData={enrichData} />
 

@@ -106,7 +106,7 @@ export default function CommandPalette() {
         {results.length > 0 ? (
           <ul className="py-1.5 max-h-80 overflow-y-auto">
             {results.map((p, i) => {
-              const { solidBg } = STATUT_COLORS[p.statut];
+              const { bg, text } = STATUT_COLORS[p.statut];
               return (
                 <li
                   key={p.id}
@@ -126,7 +126,7 @@ export default function CommandPalette() {
                       </span>
                     )}
                   </div>
-                  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium shrink-0 text-white ${solidBg}`}>
+                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold shrink-0 ${bg} ${text}`}>
                     {p.statut}
                   </span>
                   <span className="text-xs text-slate-400 shrink-0">{p.secteur}</span>
