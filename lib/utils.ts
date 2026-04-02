@@ -12,6 +12,7 @@ const STATUT_DELAY: Record<Statut, number | null> = {
   Client:         null,
   Refus:          null,
   "Sans besoin":  null,
+  "Non qualifié": null,
 };
 
 export function calcProchaineRelance(
@@ -205,9 +206,13 @@ export const STATUT_COLORS: Record<Statut, { bg: string; text: string; solidBg: 
   Client:         { bg: "bg-green-100",  text: "text-green-700",  solidBg: "bg-green-600"  },
   Refus:          { bg: "bg-gray-100",   text: "text-gray-600",   solidBg: "bg-gray-500"   },
   "Sans besoin":  { bg: "bg-gray-100",   text: "text-gray-500",   solidBg: "bg-gray-500"   },
+  "Non qualifié": { bg: "bg-gray-100",   text: "text-gray-500",   solidBg: "bg-gray-400"   },
 };
 
-const TERMINAL_STATUTS: readonly Statut[] = ["Client", "Refus", "Sans besoin"];
+const TERMINAL_STATUTS: readonly Statut[] = ["Client", "Refus", "Sans besoin", "Non qualifié"];
+
+export const DISQUAL_STATUTS: ReadonlySet<Statut> = new Set(["Refus", "Sans besoin", "Non qualifié"] as const);
+export function isDisqualified(statut: Statut): boolean { return DISQUAL_STATUTS.has(statut); }
 
 export function withRelance(p: Prospect): Prospect {
   // Terminal statuts → no follow-up scheduled

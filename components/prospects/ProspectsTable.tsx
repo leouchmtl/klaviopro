@@ -28,12 +28,245 @@ import {
   STEP_ORDER,
   STEP_TO_STATUT,
   applyStepChange,
+  DISQUAL_STATUTS,
+  isDisqualified,
 } from "@/lib/utils";
 import { useProspects } from "@/lib/hooks";
 import type { GmailMsg, MatchType } from "@/lib/gmail";
 import ColdEmailTab from "@/components/prospects/ColdEmailTab";
 import EnrichmentPanel from "@/components/prospects/EnrichmentPanel";
 import ContactFinderPanel from "@/components/prospects/ContactFinderPanel";
+import { findDuplicates } from "@/lib/duplicateDetection";
+import type { DuplicateMatch, NewProspectData } from "@/lib/duplicateDetection";
+
+// ── Disqualification ──────────────────────────────────────────────────────────
+
+const DISQUAL_REASONS = [
+  "Pas besoin d'améliorer son emailing",
+  "CA trop faible",
+  "Déjà équipé / agence en place",
+  "Pas de réponse après séquence complète",
+  "Mauvais contact",
+  "Hors cible",
+  "Autre (préciser)",
+] as const;
+
+function DisqualModal({
+  newStatut,
+  onConfirm,
+  onCancel,
+}: {
+  newStatut: Statut;
+  onConfirm: (reason: string) => void;
+  onCancel: () => void;
+}) {
+  const [reason, setReason] = useState<string>(DISQUAL_REASONS[0]);
+  const [custom, setCustom] = useState("");
+  const isCustom = reason === "Autre (préciser)";
+  const finalReason = isCustom ? (custom.trim() || "Autre") : reason;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h3 className="font-bold text-slate-900 text-base">Raison de la disqualification ?</h3>
+          <p className="text-xs text-slate-500 mt-1">Statut → <span className="font-medium text-slate-700">{newStatut}</span></p>
+        </div>
+        <select
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {DISQUAL_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        {isCustom && (
+          <input
+            type="text"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") onConfirm(finalReason); }}
+            placeholder="Précisez la raison…"
+            autoFocus
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        )}
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={() => onConfirm(finalReason)}
+            className="flex-1 px-4 py-2 text-sm font-medium text-white bg-slate-700 hover:bg-slate-800 rounded-lg transition-colors"
+          >
+            Confirmer
+          </button>
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-600 border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors"
+          >
+            Annuler
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ── DisqualDuplicateModal — blocking modal when duplicate is disqualified ──────
+
+function DisqualDuplicateModal({
+  match,
+  onReactivate,
+  onCreateAnyway,
+  onCancel,
+}: {
+  match: DuplicateMatch;
+  onReactivate: () => void;
+  onCreateAnyway: () => void;
+  onCancel: () => void;
+}) {
+  const { prospect: ex, matchType } = match;
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <p className="text-base font-bold text-slate-900">⚠️ Ce prospect ressemble à un contact déjà disqualifié</p>
+        </div>
+        <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-1.5 text-sm">
+          <p><span className="text-slate-500">Prospect existant :</span> <span className="font-semibold text-slate-800">{ex.marque || "—"}</span>{ex.email ? <span className="text-slate-500"> — {ex.email}</span> : null} <span className={`inline-block ml-1 px-2 py-0.5 rounded-full text-xs font-medium ${STATUT_COLORS[ex.statut].bg} ${STATUT_COLORS[ex.statut].text}`}>{ex.statut}</span></p>
+          {ex.disqualDate && <p><span className="text-slate-500">Disqualifié le :</span> <span className="font-medium text-slate-700">{formatDateFR(ex.disqualDate)}</span></p>}
+          {ex.disqualReason && <p><span className="text-slate-500">Raison :</span> <span className="font-medium text-slate-700">{ex.disqualReason}</span></p>}
+          <p><span className="text-slate-500">Similarité détectée :</span> <span className="font-medium text-slate-700">{matchType}</span></p>
+        </div>
+        <p className="text-sm text-slate-600 font-medium">Que souhaitez-vous faire ?</p>
+        <div className="flex flex-col gap-2">
+          <button onClick={onReactivate} className="w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors text-left">
+            🔄 Réactiver ce prospect — restaurer en « À contacter »
+          </button>
+          <button onClick={onCreateAnyway} className="w-full px-4 py-2.5 text-sm font-medium text-slate-700 border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors text-left">
+            ➕ Créer quand même — nouvelle entrée séparée
+          </button>
+          <button onClick={onCancel} className="w-full px-4 py-2.5 text-sm text-slate-500 hover:text-slate-700 transition-colors text-left">
+            Annuler
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ── CsvPreviewModal — shows summary + duplicate decisions before bulk import ───
+
+type CsvDupDecision = "skip" | "reactivate" | "create";
+
+interface CsvDupRow {
+  csvRow: Record<string, string>;
+  match: DuplicateMatch;
+  decision: CsvDupDecision;
+}
+
+interface CsvPreviewState {
+  cleanRows: Record<string, string>[];
+  dupRows: CsvDupRow[];
+}
+
+function CsvPreviewModal({
+  preview,
+  onImport,
+  onCancel,
+}: {
+  preview: CsvPreviewState;
+  onImport: (preview: CsvPreviewState) => void;
+  onCancel: () => void;
+}) {
+  const [rows, setRows] = useState<CsvDupRow[]>(preview.dupRows);
+  const disqualDups = rows.filter((r) => r.match.isDisqualified);
+  const activeDups  = rows.filter((r) => !r.match.isDisqualified);
+  const toCreate = preview.cleanRows.length + rows.filter((r) => r.decision === "create" || r.decision === "reactivate").length;
+
+  function setDecision(idx: number, d: CsvDupDecision) {
+    setRows((prev) => prev.map((r, i) => i === idx ? { ...r, decision: d } : r));
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl mx-4 flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-6 pt-6 pb-4 border-b border-slate-100">
+          <h3 className="font-bold text-slate-900 text-base">Aperçu de l&apos;import CSV</h3>
+          <div className="flex gap-4 mt-2 text-sm">
+            <span className="text-green-700 font-medium">✅ {preview.cleanRows.length} nouveaux</span>
+            {rows.length > 0 && (
+              <span className="text-amber-600 font-medium">⚠ {rows.length} doublon{rows.length > 1 ? "s" : ""}{disqualDups.length > 0 ? ` (${disqualDups.length} disqualifié${disqualDups.length > 1 ? "s" : ""})` : ""}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Dup rows */}
+        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+          {rows.length === 0 && (
+            <p className="text-sm text-slate-500 py-4 text-center">Aucun doublon détecté.</p>
+          )}
+          {rows.map((r, i) => {
+            const ex = r.match.prospect;
+            return (
+              <div key={i} className={`rounded-xl border p-4 space-y-3 ${r.match.isDisqualified ? "border-amber-200 bg-amber-50" : "border-blue-100 bg-blue-50"}`}>
+                <div className="text-sm space-y-0.5">
+                  <p className="font-semibold text-slate-800">{r.csvRow["Marque"] || r.csvRow["marque"] || "—"}{r.csvRow["Email"] ? <span className="font-normal text-slate-500"> — {r.csvRow["Email"]}</span> : null}</p>
+                  <p className="text-xs text-slate-500">
+                    Existant : <span className="font-medium text-slate-700">{ex.marque}</span>
+                    {ex.email ? ` — ${ex.email}` : ""}
+                    {" · "}<span className={`px-1.5 py-0.5 rounded-full text-xs font-medium ${STATUT_COLORS[ex.statut].bg} ${STATUT_COLORS[ex.statut].text}`}>{ex.statut}</span>
+                  </p>
+                  <p className="text-xs text-slate-400">Similarité : {r.match.matchType}</p>
+                  {r.match.isDisqualified && ex.disqualDate && (
+                    <p className="text-xs text-amber-700">Disqualifié le {formatDateFR(ex.disqualDate)}{ex.disqualReason ? ` · ${ex.disqualReason}` : ""}</p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {r.match.isDisqualified && (
+                    <button
+                      onClick={() => setDecision(i, "reactivate")}
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors border ${r.decision === "reactivate" ? "bg-blue-600 text-white border-blue-600" : "border-slate-300 text-slate-600 hover:bg-slate-100"}`}
+                    >
+                      🔄 Réactiver
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setDecision(i, "create")}
+                    className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors border ${r.decision === "create" ? "bg-slate-700 text-white border-slate-700" : "border-slate-300 text-slate-600 hover:bg-slate-100"}`}
+                  >
+                    ➕ Créer quand même
+                  </button>
+                  <button
+                    onClick={() => setDecision(i, "skip")}
+                    className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors border ${r.decision === "skip" ? "bg-slate-200 text-slate-700 border-slate-300" : "border-slate-200 text-slate-400 hover:bg-slate-50"}`}
+                  >
+                    Ignorer
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-100 flex gap-2">
+          <button
+            onClick={() => onImport({ ...preview, dupRows: rows })}
+            disabled={toCreate === 0}
+            className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+          >
+            Importer ({toCreate} prospect{toCreate > 1 ? "s" : ""})
+          </button>
+          <button onClick={onCancel} className="px-4 py-2.5 text-sm font-medium text-slate-600 border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors">
+            Annuler
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 // ── Column system ─────────────────────────────────────────────────────────────
 
@@ -86,7 +319,7 @@ type SortCol = "marque" | "ca" | ColId;
 type SortDir = "asc" | "desc";
 
 const STATUT_ORDER: Record<string, number> = Object.fromEntries(
-  ["À contacter","Contacté J0","Relance J+5","Relance J+12","Relance J+21","Relance J+35","Relance J+60","Client","Refus","Sans besoin"].map((s, i) => [s, i])
+  ["À contacter","Contacté J0","Relance J+5","Relance J+12","Relance J+21","Relance J+35","Relance J+60","Client","Refus","Sans besoin","Non qualifié"].map((s, i) => [s, i])
 );
 
 function extractFollowers(ig: string | undefined): number {
@@ -350,6 +583,9 @@ function ProspectRow({
   colOrder,
   colVisible,
   caThreshold,
+  onRequestDisqual,
+  onFieldSaved,
+  isDuplicateWarning,
 }: {
   prospect: Prospect;
   isSelected: boolean;
@@ -363,6 +599,9 @@ function ProspectRow({
   colOrder: ColId[];
   colVisible: Set<ColId>;
   caThreshold: number;
+  onRequestDisqual: (prospect: Prospect, newStatut: Statut, commit: (reason: string) => void) => void;
+  onFieldSaved?: (field: "marque" | "email", value: string) => void;
+  isDuplicateWarning?: boolean;
 }) {
   const [p, setP] = useState<Prospect>(init);
   useEffect(() => { setP(init); }, [init]);
@@ -371,6 +610,9 @@ function ProspectRow({
     const updated = withRelance({ ...p, [field]: value });
     setP(updated);
     updateProspect(updated);
+    if ((field === "marque" || field === "email") && value && onFieldSaved) {
+      onFieldSaved(field, value as string);
+    }
   }
 
   function saveStep(key: keyof ProspectSteps, entry: StepEntry) {
@@ -381,6 +623,7 @@ function ProspectRow({
   }
 
   const chaud          = p.ouverturesMultiples && p.enConversation;
+  const isDisqual      = isDisqualified(p.statut);
   const { bg, text } = STATUT_COLORS[p.statut];
   const pr          = p.prochaineRelance;
   const prColor     = relanceDateColor(pr);
@@ -468,7 +711,19 @@ function ProspectRow({
     statut: (
       <td key="statut" className="px-2 py-1.5 min-w-[125px]">
         <SelectCell
-          value={p.statut} options={STATUTS} onSave={(v) => save("statut", v as Statut)}
+          value={p.statut} options={STATUTS}
+          onSave={(v) => {
+            const s = v as Statut;
+            if (isDisqualified(s) && !isDisqualified(p.statut)) {
+              onRequestDisqual(p, s, (reason) => {
+                const updated = withRelance({ ...p, statut: s, disqualReason: reason, disqualDate: today() });
+                setP(updated);
+                updateProspect(updated);
+              });
+            } else {
+              save("statut", s);
+            }
+          }}
           display={<span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${bg} ${text}`}>{p.statut}</span>}
         />
       </td>
@@ -528,14 +783,18 @@ function ProspectRow({
   };
 
   return (
-    <tr className={`border-b border-slate-100 transition-colors ${chaud ? "bg-amber-50/60 hover:bg-amber-100/50" : "hover:bg-slate-50/60"}`}>
+    <tr className={`border-b border-slate-100 transition-colors ${isDisqual ? "bg-gray-100 text-gray-400" : chaud ? "bg-amber-50/60 hover:bg-amber-100/50" : "hover:bg-slate-50/60"}`}>
       {/* Select (fixed) */}
-      <td className={`px-2 py-1.5 text-center w-8 sticky left-0 z-[5] ${chaud ? "bg-amber-50" : "bg-white"}`}>
-        <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(p.id)} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
+      <td className={`px-2 py-1.5 text-center w-8 sticky left-0 z-[5] ${isDisqual ? "bg-gray-100" : chaud ? "bg-amber-50" : "bg-white"}`}>
+        <div className="flex items-center justify-center gap-0.5">
+          {isDisqual && <span className="text-gray-400 text-xs leading-none" title="Disqualifié">🚫</span>}
+          {isDuplicateWarning && !isDisqual && <span className="text-amber-500 text-xs leading-none" title="Doublon potentiel">🔄</span>}
+          <input type="checkbox" checked={isSelected} onChange={() => onToggleSelect(p.id)} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
+        </div>
       </td>
 
       {/* Marque (frozen) */}
-      <td className={`px-2 py-1.5 font-medium text-slate-900 w-[170px] max-w-[170px] sticky left-8 z-[5] ${chaud ? "bg-amber-50" : "bg-white"} shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]`}>
+      <td className={`px-2 py-1.5 font-medium w-[170px] max-w-[170px] sticky left-8 z-[5] ${isDisqual ? "bg-gray-100 text-gray-400" : "text-slate-900 " + (chaud ? "bg-amber-50" : "bg-white")} shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]`}>
         <EditableCell value={p.marque} onSave={(v) => save("marque", v)} placeholder="Marque" maxWidth="160px" autoFocus={autoFocusField === "marque"} />
       </td>
 
@@ -793,6 +1052,7 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
   const [p, setP]         = useState<Prospect>(init);
   const [emails, setEmails] = useState<EmailRecord[]>([]);
   const [coldCompose, setColdCompose] = useState<{ subject: string; body: string } | null>(null);
+  const [drawerDisqualModal, setDrawerDisqualModal] = useState<{ newStatut: Statut; commit: (reason: string) => void } | null>(null);
 
   function handleSendViaGmail(subject: string, body: string) {
     setColdCompose({ subject, body });
@@ -813,6 +1073,21 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
     const updated = withRelance({ ...p, [field]: value });
     setP(updated);
     updateProspect(updated);
+  }
+
+  function handleStatutChange(newStatut: Statut) {
+    if (isDisqualified(newStatut) && !isDisqualified(p.statut)) {
+      setDrawerDisqualModal({
+        newStatut,
+        commit: (reason) => {
+          const updated = withRelance({ ...p, statut: newStatut, disqualReason: reason, disqualDate: today() });
+          setP(updated);
+          updateProspect(updated);
+        },
+      });
+    } else {
+      save("statut", newStatut);
+    }
   }
 
   function saveStep(key: keyof ProspectSteps, entry: StepEntry) {
@@ -926,12 +1201,19 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
 
         <div className="flex-1 overflow-y-auto">
           {tab === "infos"
-            ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} onApplyContact={handleApplyContact} onRefreshCA={handleRefreshCA} />
+            ? <InfosTab p={p} onSave={save} onSaveStep={saveStep} onApplyContact={handleApplyContact} onRefreshCA={handleRefreshCA} onStatutChange={handleStatutChange} />
             : tab === "emails"
             ? <EmailsTab prospect={p} emails={emails} onRefresh={() => setEmails(getEmails(p.id))} onAfterSend={handleAfterSend} onReceivedDetected={handleReceivedDetected} initialCompose={coldCompose} onConsumeCompose={() => setColdCompose(null)} onSyncFromGmail={handleSyncFromGmail} />
             : <ColdEmailTab prospect={p} onSendViaGmail={handleSendViaGmail} />}
         </div>
       </div>
+      {drawerDisqualModal && (
+        <DisqualModal
+          newStatut={drawerDisqualModal.newStatut}
+          onConfirm={(reason) => { drawerDisqualModal.commit(reason); setDrawerDisqualModal(null); }}
+          onCancel={() => setDrawerDisqualModal(null)}
+        />
+      )}
     </>
   );
 }
@@ -941,13 +1223,14 @@ function ProspectDrawer({ prospect: init, onClose, onContactFound }: { prospect:
 type FieldScan = { field: "website" | "instagram"; status: "scanning" | "success" | "failed"; error?: string } | null;
 
 function InfosTab({
-  p, onSave, onSaveStep, onApplyContact, onRefreshCA,
+  p, onSave, onSaveStep, onApplyContact, onRefreshCA, onStatutChange,
 }: {
   p: Prospect;
   onSave: <K extends keyof Prospect>(f: K, v: Prospect[K]) => void;
   onSaveStep: (k: keyof ProspectSteps, e: StepEntry) => void;
   onApplyContact?: (result: { name: string; email: string; source: FoundersSource; confidence: FoundersConfidence }) => void;
   onRefreshCA?: () => Promise<void>;
+  onStatutChange?: (s: Statut) => void;
 }) {
   const pr          = p.prochaineRelance;
   const prColor     = relanceDateColor(pr);
@@ -1098,7 +1381,7 @@ function InfosTab({
 
       <div className="grid grid-cols-2 gap-4">
         <DField label="Statut">
-          <select value={p.statut} onChange={(e) => onSave("statut", e.target.value as Statut)} className={DI}>
+          <select value={p.statut} onChange={(e) => (onStatutChange ?? ((s: Statut) => onSave("statut", s)))(e.target.value as Statut)} className={DI}>
             {STATUTS.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </DField>
@@ -1613,6 +1896,12 @@ export default function ProspectsTable() {
   const [colOrder, setColOrder]           = useState<ColId[]>(() => ALL_COLS.map((c) => c.id));
   const [colVisible, setColVisible]       = useState<Set<ColId>>(() => new Set(ALL_COLS.filter((c) => c.defaultVisible).map((c) => c.id)));
   const [caThreshold, setCaThreshold]     = useState(150000);
+  const [disqualModal, setDisqualModal] = useState<{ newStatut: Statut; commit: (reason: string) => void } | null>(null);
+  const [showDisqual, setShowDisqual]   = useState(false);
+  const [csvPreview, setCsvPreview]     = useState<CsvPreviewState | null>(null);
+  const [manualDupModal, setManualDupModal] = useState<{ match: DuplicateMatch; prospectId: string } | null>(null);
+  const [manualDupBanner, setManualDupBanner] = useState<{ match: DuplicateMatch; prospectId: string } | null>(null);
+  const [duplicateRowIds, setDuplicateRowIds] = useState<Set<string>>(new Set());
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -1757,8 +2046,10 @@ export default function ProspectsTable() {
     saveColPrefs(order, Array.from(visible));
   }
 
-  const filtered   = applyFilters(prospects, filters, enrichments);
-  const visible    = sortProspects(filtered, sortCol, sortDir, enrichments);
+  const filtered        = applyFilters(prospects, filters, enrichments);
+  const allSorted       = sortProspects(filtered, sortCol, sortDir, enrichments);
+  const visible         = allSorted.filter((p) => !isDisqualified(p.statut));
+  const disqualVisible  = allSorted.filter((p) => isDisqualified(p.statut));
   const hasFilters = filters.statut !== "Tous" || filters.secteur !== "Tous" ||
     filters.dcFrom || filters.dcTo || filters.prFrom || filters.prTo ||
     filters.chaudsOnly || filters.sansKlaviyoOnly || filters.caMin > 0;
@@ -1771,6 +2062,10 @@ export default function ProspectsTable() {
     setDrawerProspectId(null);
     reload();
     setEnrichments(getAllEnrichments());
+  }
+
+  function handleRequestDisqual(_prospect: Prospect, newStatut: Statut, commit: (reason: string) => void) {
+    setDisqualModal({ newStatut, commit });
   }
 
   // ── Selection ──────────────────────────────────────────────────────────────
@@ -1813,6 +2108,73 @@ export default function ProspectsTable() {
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
 
+  // Called by ProspectRow when the new row's marque or email is saved
+  function handleManualDupCheck(prospectId: string, field: "marque" | "email", value: string) {
+    if (!value.trim()) return;
+    const currentP = prospects.find((p) => p.id === prospectId);
+    if (!currentP) return;
+    const data: NewProspectData = {
+      marque:  field === "marque" ? value : currentP.marque,
+      email:   field === "email"  ? value : currentP.email,
+      website: currentP.website,
+      contact: currentP.contact,
+    };
+    // Exclude itself from check
+    const others = prospects.filter((p) => p.id !== prospectId);
+    const matches = findDuplicates(data, others);
+    if (!matches.length) return;
+    // Prioritise disqualified match
+    const disqualMatch = matches.find((m) => m.isDisqualified);
+    if (disqualMatch) {
+      setManualDupModal({ match: disqualMatch, prospectId });
+    } else {
+      setManualDupBanner({ match: matches[0], prospectId });
+    }
+  }
+
+  function addProspectFromRow(row: Record<string, string>) {
+    const rawStatut  = (row["Statut"]  || "À contacter").trim() as Statut;
+    const rawSecteur = (row["Secteur"] || "Autre").trim() as Secteur;
+    addOne({
+      marque:          row["Marque"] || row["marque"] || "",
+      secteur:         SECTEURS.includes(rawSecteur) ? rawSecteur : "Autre",
+      contact:         row["Contact"] || "",
+      email:           row["Email"]   || "",
+      gapCrm:          row["Gap CRM"] || "",
+      website:         row["Website"] || "",
+      instagramHandle: row["Instagram"] || "",
+      foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
+      annualRevenue: null, revenueSource: "", revenueYear: "", revenueRaw: "",
+      disqualReason: "", disqualDate: null,
+      statut:          STATUTS.includes(rawStatut) ? rawStatut : "À contacter",
+      notes:           row["Notes"] || "",
+      steps:           emptySteps(),
+      ouverturesMultiples: false, enConversation: false,
+      dernierContact:  row["Dernier contact"] || null,
+      relanceFaite:    false,
+    });
+  }
+
+  function applyCSVImport(preview: CsvPreviewState) {
+    // Import clean rows
+    preview.cleanRows.forEach((row) => addProspectFromRow(row));
+    // Apply duplicate decisions
+    preview.dupRows.forEach((dr) => {
+      if (dr.decision === "reactivate") {
+        const ex = dr.match.prospect;
+        const note = ex.notes ? ex.notes + `\nRéactivé le ${today()}` : `Réactivé le ${today()}`;
+        updateProspect(withRelance({ ...ex, statut: "À contacter", disqualReason: "", disqualDate: null, notes: note }));
+      } else if (dr.decision === "create") {
+        addProspectFromRow(dr.csvRow);
+      }
+      // "skip" → do nothing
+    });
+    const count = preview.cleanRows.length + preview.dupRows.filter((r) => r.decision === "create" || r.decision === "reactivate").length;
+    reload();
+    setCsvPreview(null);
+    showToast(`${count} prospect${count > 1 ? "s" : ""} importé${count > 1 ? "s" : ""}.`);
+  }
+
   function handleAdd() {
     const np = addOne({
       marque: "", secteur: "Autre", contact: "", email: "",
@@ -1822,15 +2184,16 @@ export default function ProspectsTable() {
       dernierContact: null, relanceFaite: false,
       foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
       annualRevenue: null, revenueSource: "", revenueYear: "", revenueRaw: "",
+      disqualReason: "", disqualDate: null,
     });
     setNewRowId(np.id);
-    // Auto-enrich in background (will be a no-op if marque is still empty)
     setTimeout(() => enrichOne(np), 2000);
   }
 
   function handleDelete(id: string) {
     deleteOne(id);
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    setDuplicateRowIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
   }
 
   function handleCSV(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1839,33 +2202,36 @@ export default function ProspectsTable() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const rows = parseCSV(ev.target?.result as string);
-      let n = 0;
+      const cleanRows: Record<string, string>[] = [];
+      const dupRows: CsvDupRow[] = [];
+
       rows.forEach((row) => {
         const marque = row["Marque"] || row["marque"] || "";
         if (!marque.trim()) return;
-        const rawStatut  = (row["Statut"]  || "À contacter").trim() as Statut;
-        const rawSecteur = (row["Secteur"] || "Autre").trim() as Secteur;
-        addOne({
+        const data: NewProspectData = {
           marque,
-          secteur:    SECTEURS.includes(rawSecteur) ? rawSecteur : "Autre",
-          contact:    row["Contact"] || "",
-          email:      row["Email"]   || "",
-          gapCrm:          row["Gap CRM"] || "",
-          website:         row["Website"] || "",
-          instagramHandle: row["Instagram"] || "",
-          foundersName: "", foundersEmail: "", foundersSource: "", foundersConfidence: "",
-      annualRevenue: null, revenueSource: "", revenueYear: "", revenueRaw: "",
-          statut:     STATUTS.includes(rawStatut) ? rawStatut : "À contacter",
-          notes:      row["Notes"] || "",
-          steps:      emptySteps(),
-          ouverturesMultiples: false, enConversation: false,
-          dernierContact: row["Dernier contact"] || null,
-          relanceFaite:   false,
-        });
-        n++;
+          email:   row["Email"]   || "",
+          website: row["Website"] || "",
+          contact: row["Contact"] || "",
+        };
+        const matches = findDuplicates(data, prospects);
+        if (matches.length > 0) {
+          // Use disqual match first, else first active match
+          const match = matches.find((m) => m.isDisqualified) ?? matches[0];
+          dupRows.push({ csvRow: row, match, decision: "skip" });
+        } else {
+          cleanRows.push(row);
+        }
       });
-      reload();
-      alert(`${n} prospect(s) importé(s).`);
+
+      if (dupRows.length === 0 && cleanRows.length > 0) {
+        // No duplicates — import directly
+        cleanRows.forEach((row) => addProspectFromRow(row));
+        reload();
+        showToast(`${cleanRows.length} prospect${cleanRows.length > 1 ? "s" : ""} importé${cleanRows.length > 1 ? "s" : ""}.`);
+      } else {
+        setCsvPreview({ cleanRows, dupRows });
+      }
       e.target.value = "";
     };
     reader.readAsText(file);
@@ -2039,6 +2405,9 @@ export default function ProspectsTable() {
                     colOrder={colOrder}
                     colVisible={colVisible}
                     caThreshold={caThreshold}
+                    onRequestDisqual={handleRequestDisqual}
+                    onFieldSaved={p.id === newRowId ? (field, value) => handleManualDupCheck(p.id, field, value) : undefined}
+                    isDuplicateWarning={duplicateRowIds.has(p.id)}
                   />
                 ))
               )}
@@ -2047,9 +2416,129 @@ export default function ProspectsTable() {
         </div>
       </div>
 
+      {/* Disqualified prospects section */}
+      {disqualVisible.length > 0 && (
+        <div className="mt-3">
+          <button
+            onClick={() => setShowDisqual((v) => !v)}
+            className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 font-medium px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors w-full text-left"
+          >
+            <span className="text-base">{showDisqual ? "▲" : "▼"}</span>
+            <span>Prospects disqualifiés ({disqualVisible.length})</span>
+          </button>
+          {showDisqual && (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mt-2">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      <th className="px-2 py-2 w-8 text-center sticky left-0 z-20 bg-slate-50" />
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide sticky left-8 z-20 bg-slate-50 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">Marque</th>
+                      {colOrder.filter((id) => colVisible.has(id)).map((id) => {
+                        const COL_LABELS: Record<ColId, string> = {
+                          contact: "Contact", email: "Email", shopify: "🛍", klaviyo: "⚡",
+                          instagram: "Instagram", gapCrm: "Gap CRM", statut: "Statut", notes: "Notes",
+                          chaud: "🔥", ouvertures: "✉×", conversation: "💬",
+                          relances: "Relances", dernierContact: "Dernier contact",
+                          prochaineRelance: "Prochaine relance", secteur: "Secteur", ca: "CA",
+                        };
+                        return <TH key={id}>{COL_LABELS[id]}</TH>;
+                      })}
+                      <TH center> </TH>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {disqualVisible.map((p) => (
+                      <ProspectRow
+                        key={p.id}
+                        prospect={p}
+                        isSelected={selectedIds.has(p.id)}
+                        onToggleSelect={toggleSelect}
+                        onDelete={handleDelete}
+                        onOpen={setDrawerProspectId}
+                        enrichment={enrichments[p.id] ?? null}
+                        scanStatus={scanStatus[p.id]}
+                        onEnrich={(p) => enrichOne(p)}
+                        colOrder={colOrder}
+                        colVisible={colVisible}
+                        caThreshold={caThreshold}
+                        onRequestDisqual={handleRequestDisqual}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Drawer */}
       {drawerProspect && (
         <ProspectDrawer prospect={drawerProspect} onClose={handleCloseDrawer} onContactFound={showToast} />
+      )}
+
+      {/* Disqualification modal */}
+      {disqualModal && (
+        <DisqualModal
+          newStatut={disqualModal.newStatut}
+          onConfirm={(reason) => { disqualModal.commit(reason); setDisqualModal(null); }}
+          onCancel={() => setDisqualModal(null)}
+        />
+      )}
+
+      {/* CSV import preview modal */}
+      {csvPreview && mounted && (
+        <CsvPreviewModal
+          preview={csvPreview}
+          onImport={applyCSVImport}
+          onCancel={() => setCsvPreview(null)}
+        />
+      )}
+
+      {/* Manual add — disqual duplicate modal (blocking) */}
+      {manualDupModal && mounted && (
+        <DisqualDuplicateModal
+          match={manualDupModal.match}
+          onReactivate={() => {
+            const ex = manualDupModal.match.prospect;
+            const note = ex.notes ? ex.notes + `\nRéactivé le ${today()}` : `Réactivé le ${today()}`;
+            updateProspect(withRelance({ ...ex, statut: "À contacter", disqualReason: "", disqualDate: null, notes: note }));
+            // Remove the newly created duplicate row
+            handleDelete(manualDupModal.prospectId);
+            reload();
+            setManualDupModal(null);
+          }}
+          onCreateAnyway={() => {
+            setDuplicateRowIds((prev) => { const n = new Set(prev); n.add(manualDupModal.prospectId); return n; });
+            setManualDupModal(null);
+          }}
+          onCancel={() => setManualDupModal(null)}
+        />
+      )}
+
+      {/* Manual add — active duplicate banner (non-blocking) */}
+      {manualDupBanner && mounted && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[150] max-w-lg w-full mx-4">
+          <div className="bg-white border border-blue-200 rounded-xl shadow-lg px-4 py-3 flex items-start gap-3">
+            <span className="text-blue-500 text-base shrink-0 mt-0.5">ℹ️</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-slate-700">
+                Un prospect similaire existe déjà :{" "}
+                <span className="font-semibold">{manualDupBanner.match.prospect.marque}</span>
+                {" — "}Statut : <span className="font-medium">{manualDupBanner.match.prospect.statut}</span>
+                {" · "}<span className="text-slate-400 text-xs">{manualDupBanner.match.matchType}</span>
+              </p>
+              <button
+                onClick={() => { setDrawerProspectId(manualDupBanner.match.prospect.id); setManualDupBanner(null); }}
+                className="text-xs text-blue-600 hover:underline mt-0.5"
+              >
+                Voir la fiche →
+              </button>
+            </div>
+            <button onClick={() => setManualDupBanner(null)} className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">×</button>
+          </div>
+        </div>
       )}
 
       {/* Toasts */}

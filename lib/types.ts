@@ -9,6 +9,7 @@ export const STATUTS = [
   "Client",
   "Refus",
   "Sans besoin",
+  "Non qualifié",
 ] as const;
 
 export type Statut = (typeof STATUTS)[number];
@@ -71,6 +72,8 @@ export interface Prospect {
   revenueSource: RevenueSource;
   revenueYear: string;
   revenueRaw: string;
+  disqualReason: string;
+  disqualDate: string | null;
 }
 
 export interface EnrichmentData {

@@ -45,6 +45,8 @@ function applyDefaults(raw: Record<string, unknown>): Prospect {
     revenueSource:       (raw.revenueSource as RevenueSource) ?? "",
     revenueYear:         (raw.revenueYear as string)          ?? "",
     revenueRaw:          (raw.revenueRaw as string)           ?? "",
+    disqualReason:       (raw.disqualReason as string)        ?? "",
+    disqualDate:         (raw.disqualDate as string | null)   ?? null,
   };
 }
 
